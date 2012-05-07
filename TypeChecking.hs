@@ -4,7 +4,7 @@ module TypeChecking where
 
 import qualified KappaParser as KP
 import KappaParser -- FIXME
-import PlainOldKappa (showAgent)
+import PureKappa (showAgent)
 import Utils
 import Misc
 

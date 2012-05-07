@@ -1,4 +1,4 @@
-module PlainOldKappa where
+module PureKappa where
 
 import KappaParser
 import Data.List (intercalate, find, nub, (\\), lookup)
