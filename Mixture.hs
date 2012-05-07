@@ -4,6 +4,7 @@ import qualified Data.Vector as Vec
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.List (intercalate)
+import Data.Maybe (isJust)
 
 import qualified KappaParser as KP
 import qualified Env as E
@@ -230,6 +231,16 @@ toKappa env mix = intercalate ", " . Vec.toList . Vec.imap agentStr $ agents mix
                 bindingStateStr Bound = "!" ++ show (Map.lookup (agentId, multisiteId, siteId) linkMap ?
                                                           "Mixture.toKappa: couldn't find endpoint " ++ show (agentId, multisiteId, siteId))
 
+valid :: Mixture -> Bool
+valid mix@(Mixture{ graph = graph }) = all isInMix (Map.toList graph) && Vec.all isInGraph boundSites
+  where boundSites = do (aId, agent) <- Vec.indexed $ agents mix
+                        (msId, ms) <- Vec.indexed $ interface agent
+                        (sId, Site{ bindingState = Bound }) <- Vec.indexed ms
+                        return (aId, msId, sId)
+
+        isInMix (ep1, ep2) = ep1 `Vec.elem` boundSites && ep2 `Vec.elem` boundSites
+
+        isInGraph ep1 = (Map.lookup ep1 graph >>= flip Map.lookup graph) == Just ep1
 
 
 -- Error reporting

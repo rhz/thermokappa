@@ -5,7 +5,7 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.List (delete, nub, nubBy, unzip4, intercalate, lookup, partition, (\\))
 import Data.Tuple (swap)
-import Data.Maybe (catMaybes, fromJust)
+import Data.Maybe (catMaybes, fromJust, isJust)
 import System.IO.Unsafe
 
 import qualified Mixture as M
@@ -31,6 +31,7 @@ agentIds m = [0..Vec.length (M.agents m) - 1]
 agentsWithId :: M.Mixture -> [(M.AgentId, M.Agent)]
 agentsWithId = indexedList . M.agents
 
+
 fillMultiSite :: E.Env -> (M.AgentNameId, M.MultiSiteId) -> M.MultiSite -> M.MultiSite
 fillMultiSite env (agentNameId, multisiteId) mss = mss Vec.++ Vec.replicate (numSites - Vec.length mss) unspecifiedSite
   where numSites = E.numSites env (agentNameId, multisiteId)
@@ -42,6 +43,7 @@ removeUnspecified = Vec.filter (not . isUnspecified)
 isUnspecified :: M.Site -> Bool
 isUnspecified (M.Site{ M.internalState = Nothing, M.bindingState = M.Unspecified }) = True
 isUnspecified _ = False
+
 
 -- Match
 agentMatch :: M.Agent -> M.Agent -> [SiteMatchings]
@@ -151,7 +153,7 @@ unify env a1 a2 = nub $
 -- in the sense that it keeps the less specific sites)
 
 -- Intersect
-type PendingLink = (M.Endpoint, ((M.MultiSiteId, M.MultiSiteId), (M.SiteId, M.SiteId)))
+type PendingLink = (M.Endpoint, M.MultiSiteId, (M.SiteId, M.SiteId))
 
 -- Returns all possible pull-backs for the two mixtures
 --intersections :: E.Env -> M.Mixture -> M.Mixture -> [(M.Mixture, Glueing, Glueing)]
@@ -181,19 +183,26 @@ intersections env m1 m2 = nub $ pullbacks [(M.empty, [], [], ids1, ids2, [])] --
     intersectAndExtend mix (((id1, id2), pendingLinks):todo) ids1 ids2 m1Glueing m2Glueing
       | Set.member id1 ids1 && Set.member id2 ids2 =
         do (a3, smatchings1, smatchings2) <- intersect env a1 a2
+           guard $ all (hasSite smatchings1 smatchings2) pendingLinks
+
            let m1Glueing' = ((id1, id3), smatchings1) : m1Glueing
                m2Glueing' = ((id2, id3), smatchings2) : m2Glueing
+
                -- For every bound site in a3, intersect and extend the neighbours
-               nbs = [ ((nb1, nb2), (ep3, ((nbMultisiteId1, nbMultisiteId2), (nbSiteId1, nbSiteId2)))) |
-                       (multisiteId, (mss, sm1, sm2)) <- indexedList $ Vec.zip3 (M.interface a3) smatchings1 smatchings2 ,
-                       (siteId3, M.Site{ M.bindingState = M.Bound }) <- indexedList mss ,
-                       let siteId1 = lookup siteId3 (map swap sm1) ? "Matching.intersections.intersectAndExtend: incomplete site matchings (1)"
-                           siteId2 = lookup siteId3 (map swap sm2) ? "Matching.intersections.intersectAndExtend: incomplete site matchings (2)"
-                           ep1 = (id1, multisiteId, siteId1)
-                           ep2 = (id2, multisiteId, siteId2)
-                           ep3 = (id3, multisiteId, siteId3)
-                           (nb1, nbMultisiteId1, nbSiteId1) = M.follow m1 ep1 ? "Matching.intersections.intersectAndExtend: disconnected graph (1)"
-                           (nb2, nbMultisiteId2, nbSiteId2) = M.follow m2 ep2 ? "Matching.intersections.intersectAndExtend: disconnected graph (2)" ]
+               nbs = do (multisiteId, (mss, sm1, sm2)) <- indexedList $ Vec.zip3 (M.interface a3) smatchings1 smatchings2
+                        (siteId3, M.Site{ M.bindingState = M.Bound }) <- indexedList mss
+
+                        let siteId1 = lookup siteId3 (map swap sm1) ? "Matching.intersections.intersectAndExtend: incomplete site matchings (1)"
+                            siteId2 = lookup siteId3 (map swap sm2) ? "Matching.intersections.intersectAndExtend: incomplete site matchings (2)"
+                            ep1 = (id1, multisiteId, siteId1)
+                            ep2 = (id2, multisiteId, siteId2)
+                            ep3 = (id3, multisiteId, siteId3)
+                            (nb1, nbMultisiteId1, nbSiteId1) = M.follow m1 ep1 ? "Matching.intersections.intersectAndExtend: disconnected graph (1)"
+                            (nb2, nbMultisiteId2, nbSiteId2) = M.follow m2 ep2 ? "Matching.intersections.intersectAndExtend: disconnected graph (2)"
+
+                        if nbMultisiteId1 /= nbMultisiteId2
+                          then error "Matching.intersections.intersectAndExtend: multisite ids in neighbour differ"
+                          else return ((nb1, nb2), (ep3, nbMultisiteId1, (nbSiteId1, nbSiteId2)))
 
                nbs' = map (fst . head |.| map snd) $ groupWith fst nbs
                mix' = M.Mixture{ M.agents = Vec.snoc (M.agents mix) a3
@@ -209,13 +218,17 @@ intersections env m1 m2 = nub $ pullbacks [(M.empty, [], [], ids1, ids2, [])] --
             a2 = M.agents m2 Vec.! id2
             id3 = Vec.length (M.agents mix)
 
+            hasSite :: SiteMatchings -> SiteMatchings -> PendingLink -> Bool
+            hasSite smatchings1 smatchings2 (_, msId, (sId1, sId2)) =
+              isJust $ smatchings1 Vec.!? msId >>= lookup sId1 >> smatchings2 Vec.!? msId >>= lookup sId2
+
             -- TODO I should use forward/backward maps here instead of glueings
             insertLink :: SiteMatchings -> SiteMatchings -> PendingLink -> M.Graph -> M.Graph
-            insertLink smatchings1 smatchings2 (ep, ((multisiteId1, multisiteId2), (siteId1, siteId2)))
-              | multisiteId1 == multisiteId2 && siteId3 == siteId3' = M.addLink ep (id3, multisiteId1, siteId3)
-              | otherwise = error "Matching.intersections.intersectAndExtend: oops"
-              where siteId3  = lookup siteId1 (smatchings1 Vec.! multisiteId1) ? "Matching.intersections.insertLink: missing site in matching (1)"
-                    siteId3' = lookup siteId2 (smatchings2 Vec.! multisiteId2) ? "Matching.intersections.insertLink: missing site in matching (2)"
+            insertLink smatchings1 smatchings2 (ep, multisiteId, (siteId1, siteId2))
+              | siteId3 == siteId3' = M.addLink ep (id3, multisiteId, siteId3)
+              | otherwise = error "Matching.intersections.insertLink: site ids in neighbour differ"
+              where siteId3  = lookup siteId1 (smatchings1 Vec.! multisiteId) ? "Matching.intersections.insertLink: missing site in matching (1)"
+                    siteId3' = lookup siteId2 (smatchings2 Vec.! multisiteId) ? "Matching.intersections.insertLink: missing site in matching (2)"
 
 
 intersect :: E.Env -> M.Agent -> M.Agent -> [(M.Agent, SiteMatchings, SiteMatchings)]
@@ -230,6 +243,7 @@ intersect env a1 a2 =
     multiIntersect :: (M.Interface, SiteMatchings, SiteMatchings) -> (M.MultiSiteId, (M.MultiSite, M.MultiSite)) -> [(M.Interface, SiteMatchings, SiteMatchings)]
     multiIntersect (intf, smatchings1, smatchings2) (multisiteId, (mss1, mss2)) =
       do (multisite, smatching1, smatching2, remainingSites) <- Vec.foldM siteIntersect (Vec.empty, [], [], mss2') mss1'
+         --guard $ null remainingSites
          return ( Vec.snoc intf multisite
                 , Vec.snoc smatchings1 smatching1
                 , Vec.snoc smatchings2 smatching2
@@ -289,12 +303,12 @@ mkFwdMap glueings = Map.fromList $
      return ((aId1, msId, sId1), (aId2, msId, sId2))
 
 
-minimalGlueings :: E.Env -> M.Mixture -> M.Mixture -> [(M.Mixture, (FwdMap, AgentMap), (FwdMap, AgentMap))]
+minimalGlueings :: E.Env -> M.Mixture -> M.Mixture -> [(M.Mixture, ((FwdMap, AgentMap), (FwdMap, AgentMap)))]
 minimalGlueings env m1 m2 =
-  do (m3  , m1Glueings, m2Glueings, _, _, _) <- intersections env m1 m2
+  do (m3, m1Glueings, m2Glueings, _, _, _) <- intersections env m1 m2
      let (m3' , m1FwdMap, m1AgentMap) = extend m1 m1Glueings m3
          (m3'', m2FwdMap, m2AgentMap) = extend m2 m2Glueings m3'
-     return (m3'', (m1FwdMap, m1AgentMap), (m2FwdMap, m2AgentMap))
+     return (m3'', ((m1FwdMap, m1AgentMap), (m2FwdMap, m2AgentMap)))
   where
     extend :: M.Mixture -> Glueing -> M.Mixture -> (M.Mixture, FwdMap, AgentMap)
     extend m1 glueings m3 = addSites missingSites (m3, fwdMap, agentMap)
@@ -326,8 +340,8 @@ minimalGlueings env m1 m2 =
                               return ((aId1, msId, sId1), aId3)
 
         addSites ((ep1@(aId1, msId, sId1), aId3):missingSites) (m3, fwdMap, agentMap)
-          | nbId1 `Map.member` agentMap  =  addSites  missingSites              (m3' , fwdMap' , agentMap') -- link
-          | otherwise                    =  addSites (missingSites ++ newSites) (m3'', fwdMap'', agentMap') -- append agent and link
+          | nbId1 `Map.member` agentMap  =  addSites  missingSites              (m3' , fwdMap', agentMap') -- link
+          | otherwise                    =  addSites (missingSites ++ newSites) (m3'', fwdMap', agentMap') -- append agent and link
           where
             nbEp1@(nbId1, nbMsId, nbSiteId1) = M.follow m1 ep1 ? "Matching.minimalGlueing.extend: missing link"
 
@@ -341,8 +355,9 @@ minimalGlueings env m1 m2 =
             site = M.interface (M.agents m1 Vec.! aId1) Vec.! msId Vec.! sId1
             sId3 = Vec.length multisite
 
-            nbEp3@(nbId3, _, nbSiteId3) = Map.findWithDefault nbEp3' nbEp1 fwdMap
-            nbEp3' = (Vec.length agents', nbMsId, 0)
+            nbEp3 | nbId1 `Map.member` agentMap = (agentMap Map.! nbId1, nbMsId, Vec.length multisite)
+                  | otherwise = (Vec.length agents', nbMsId, 0)
+            (nbId3, _, nbSiteId3) = nbEp3
 
             graph' | M.isBound site = M.addLink (aId3, msId, sId3) nbEp3 (M.graph m3) -- add link
                    | otherwise = M.graph m3
@@ -358,9 +373,7 @@ minimalGlueings env m1 m2 =
             agents'' = Vec.snoc agents' nb3
             m3'' = m3'{ M.agents = agents'' }
 
-            fwdMap'  = Map.insert ep1 (aId3, msId, sId3) fwdMap
-            fwdMap'' = Map.insert nbEp1 nbEp3 fwdMap'
-
+            fwdMap'  = Map.insert nbEp1 nbEp3 $ Map.insert ep1 (aId3, msId, sId3) fwdMap
             agentMap' = Map.insert aId1 aId3 $ Map.insert nbId1 nbId3 agentMap
 
             -- Collect new sites from nb1
@@ -370,6 +383,8 @@ minimalGlueings env m1 m2 =
                           return ((nbId1, nbMsId, nbSiteId1), nbId3)
 
 
+-- GraphViz
+{-
 toDot :: E.Env -> M.Mixture -> M.Mixture -> M.Mixture -> (FwdMap, AgentMap) -> (FwdMap, AgentMap) -> String
 toDot env m1 m2 m3 (m1FwdMap, m1AgentMap) (m2FwdMap, m2AgentMap) =
   "digraph {\n" ++
@@ -381,4 +396,59 @@ toDot env m1 m2 m3 (m1FwdMap, m1AgentMap) (m2FwdMap, m2AgentMap) =
   "  m1 -> m3 [ label = \"" ++ show (Map.toList m1AgentMap) ++ "\" ];\n" ++
   "  m2 -> m3 [ label = \"" ++ show (Map.toList m2AgentMap) ++ "\" ];\n" ++
   "}\n"
+-}
+
+condensedDot :: E.Env -> M.Mixture -> M.Mixture -> [(M.Mixture, (AgentMap, AgentMap))] -> String
+condensedDot env m1 m2 m3s =
+  "digraph {\n" ++
+  "  overlap = \"prism\";\n" ++
+  "  node [ shape = \"box\" ];\n" ++
+  "  m1 [ label = \"" ++ M.toKappa env m1 ++ "\" ];\n" ++
+  "  m2 [ label = \"" ++ M.toKappa env m2 ++ "\" ];\n\n" ++
+  intercalate "\n" (zipWith m3Dot [3..] m3s) ++
+  "}\n"
+  where m3Dot i (m3, (m1AgentMap, m2AgentMap)) =
+          "  m" ++ show i ++ " [ label = \"" ++ M.toKappa env m3 ++ "\" ];\n" ++
+          "  m1 -> m" ++ show i ++ " [ label = \"" ++ show (Map.toList m1AgentMap) ++ "\", color = \"firebrick3\",  fontcolor = \"firebrick3\"  ];\n" ++
+          "  m2 -> m" ++ show i ++ " [ label = \"" ++ show (Map.toList m2AgentMap) ++ "\", color = \"dodgerblue3\", fontcolor = \"dodgerblue3\" ];\n"
+
+detailedDot :: E.Env -> M.Mixture -> M.Mixture -> (M.Mixture, (AgentMap, AgentMap)) -> String
+detailedDot env m1 m2 (m3, (m1AgentMap, m2AgentMap)) =
+  "digraph {\n" ++
+  "  overlap = \"scale\";\n" ++
+  "  sep = \"1\";\n" ++
+  "  node [ shape = \"circle\" ];\n\n" ++
+  exprDot m1 "M1" ++ "\n" ++
+  exprDot m2 "M2" ++ "\n" ++
+  exprDot m3 "M3" ++ "\n" ++
+  matchingsDot m1AgentMap m1 "M1" m3 "M3" "firebrick3" ++ "\n" ++
+  matchingsDot m2AgentMap m2 "M2" m3 "M3" "dodgerblue3" ++
+  "}\n"
+  where exprDot mix prefix = "  subgraph {\n" ++
+                             concatMap nodeDot (agentsWithId mix) ++
+                             concatMap linkDot links ++
+                             "  }\n"
+          where nodes = Vec.imap nodeName $ M.agents mix
+                nodeName i agent = prefix ++ agentName agent ++ show i
+
+                nodeDot  (i, agent) = "    " ++ nodeName i agent ++ " [ label = \"" ++ agentName agent ++ "\" ];\n"
+
+                links = map Set.toList . nub . map toSet . Map.toList $ M.graph mix
+                toSet (a, b) = Set.insert a $ Set.singleton b
+
+                linkDot [(aId1, msId1, sId1), (aId2, msId2, sId2)] =
+                  "    " ++ (nodes Vec.!? aId1 ? "Matching.detailedDot: " ++ show aId1 ++ ", " ++ show nodes ++ ", " ++ show (M.toKappa env mix)) ++
+                  " -> " ++ (nodes Vec.!? aId2 ? "Matching.detailedDot: " ++ show aId2 ++ ", " ++ show nodes ++ ", " ++ show (M.toKappa env mix)) ++
+                  " [ headlabel = \"" ++ siteName aId1 msId1 mix ++ "\"" ++
+                  " , taillabel = \"" ++ siteName aId2 msId2 mix ++ "\", arrowhead = \"none\" ];\n"
+
+        agentName agent = E.agentOfId env (M.agentName agent) ? "Matching.detailedDot: missing agent name id"
+        siteName aId msId mix = E.siteOfId env (M.agentName (M.agents mix Vec.! aId), msId) ? "Matching.detailedDot: missing site id"
+
+        matchingsDot agentMap sourceMix sourcePrefix targetMix targetPrefix color = concatMap matchingDot $ Map.toList agentMap
+          where matchingDot (sourceId, targetId) = "  "   ++ nodeName sourceId sourceMix sourcePrefix ++
+                                                   " -> " ++ nodeName targetId targetMix targetPrefix ++
+                                                   " [ style = \"dashed\", color = \"" ++ color ++ "\" ];\n"
+
+                nodeName aId mix prefix = prefix ++ agentName (M.agents mix Vec.! aId) ++ show aId
 

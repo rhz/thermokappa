@@ -18,11 +18,15 @@ main = do inputFilename : _ <- getArgs
 
               m1 : m2 : _ = map (M.evalKExpr env True) kexprs
 
-              results = do (m3, (m1FwdMap, m1AgentMap), (m2FwdMap, m2AgentMap)) <- minimalGlueings env m1 m2
-                           return $ toDot env m1 m2 m3 (m1FwdMap, m1AgentMap) (m2FwdMap, m2AgentMap)
+              m3s = do (m3, ((m1FwdMap, m1AgentMap), (m2FwdMap, m2AgentMap))) <- minimalGlueings env m1 m2
+                       return (m3, (m1AgentMap, m2AgentMap))
 
-              basename = dropExtension inputFilename ++ "-"
-              outputFilenames = map (++ ".dot") . map (basename ++) $ map show [0..length results]
+              cDot = condensedDot env m1 m2 m3s
+              dDots = map (detailedDot env m1 m2) m3s
 
-          zipWithM_ writeFile outputFilenames results
+              basename = dropExtension inputFilename
+              outputFilenames = map (++ ".dot") . map ((basename ++ "-") ++) $ map show [0..length m3s]
+
+          writeFile (basename ++ ".dot") cDot
+          zipWithM_ writeFile outputFilenames dDots
 
