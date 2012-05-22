@@ -1,7 +1,7 @@
-module Env( Env(..), createEnv
+module Env( Env(..), createEnv, AgentNameId, SiteNameId, InternalStateId
           , agentOfId, siteOfId, intStateOfId
           , idOfAgent, idOfSite, idOfIntState
-          , defaultInternalState, numMultiSites, numSites
+          , defaultInternalState, numSites
           ) where
 
 import qualified Data.Vector as Vec
@@ -9,17 +9,16 @@ import qualified Data.Vector as Vec
 import qualified KappaParser as KP
 import Utils
 
+-- All these identifiers are locally unique
 type AgentNameId = Int
 type SiteNameId = Int
-type InternalStateId = Int -- internal states are unique
+type InternalStateId = Int
 
 -- This data structure stores the name of everything and assigns it an id
 data Env = Env { agentNames :: Vec.Vector KP.AgentName -- indexed by AgentNameId
                , siteNames :: Vec.Vector (Vec.Vector KP.SiteName) -- indexed by AgentNameId then SiteNameId
                , intStates :: Vec.Vector (Vec.Vector (Vec.Vector KP.InternalState)) -- indexed by AgentNameId then SiteNameId then InternalStateId
-               , multiSites :: Vec.Vector (Vec.Vector Int) -- number of sites for each multisite -- indexed by AgentNameId then SiteNameId
                , ruleNames :: Vec.Vector KP.RuleName -- indexed by RuleId
-               , shapeNames :: Vec.Vector KP.ShapeName -- indexed by ShapeId
                , varNames :: Vec.Vector KP.VarName -- indexed by variable id, observables are considered as variables here
                }
   deriving (Show, Eq)
@@ -30,22 +29,18 @@ createEnv :: KP.Module -> Env
 createEnv m@(KP.Module{ KP.contactMap = cm }) =
   Env { agentNames = agentNames
       , siteNames = Vec.fromList $ map fst sites
-      , intStates = Vec.fromList $ map (fst . snd) sites
-      , multiSites = Vec.fromList $ map (snd . snd) sites
+      , intStates = Vec.fromList $ map snd sites
       , ruleNames = ruleNames
-      , shapeNames = Vec.empty -- TODO should shapes have names?
-      , varNames = varNames
+      , varNames  = varNames
       }
   where agentNames = Vec.fromList $ map KP.cmAgentName cm
+        ruleNames  = Vec.fromList $ map fst (KP.rules m)
+        varNames   = Vec.fromList $ map fst (KP.vars  m)
         sites = map getSites cm
-        ruleNames = Vec.fromList $ map fst (KP.rules m)
-        varNames = Vec.fromList $ map fst (KP.vars m)
 
-        getSites agent = (siteNames, (intStates, numSites))
-          where siteNames = Vec.fromList $ map (KP.cmSiteName . fst) sites
-                intStates = Vec.fromList $ map (Vec.fromList . KP.cmInternalStates . fst) sites
-                numSites = Vec.fromList $ map snd sites
-                sites = map (head |.| length) . groupWith KP.cmSiteName $ sortWith KP.cmSiteName (KP.cmInterface agent)
+        getSites agent = (siteNames, intStates)
+          where siteNames = Vec.fromList $ map KP.cmSiteName (KP.cmInterface agent)
+                intStates = Vec.fromList $ map (Vec.fromList . KP.cmInternalStates) (KP.cmInterface agent)
 
 
 agentOfId :: Env -> AgentNameId -> Maybe KP.AgentName
@@ -84,6 +79,7 @@ isRule :: Env -> RuleId -> Bool -- check if ruleId < Vec.length ruleNames
 -}
 
 
+-- TODO this should return Maybe InternalStateId
 defaultInternalState :: Env -> (AgentNameId, SiteNameId) -> InternalStateId
 defaultInternalState env (agentId, multisiteId)
   | Vec.length states == 0  = error $ "Env.defaultInternalState: no default internal state for agent '" ++ agentName ++ "' and site '" ++ siteName ++ "'"
@@ -93,11 +89,8 @@ defaultInternalState env (agentId, multisiteId)
         siteName = siteOfId env (agentId, multisiteId) ? "Env.defaultInternalState: missing site name id in agent '" ++ show agentName ++ "'"
 
 
-numMultiSites :: Env -> AgentNameId -> Int
-numMultiSites env agentId = Vec.length intf
+-- TODO this should return Maybe Int
+numSites :: Env -> AgentNameId -> Int
+numSites env agentId = Vec.length intf
   where intf = siteNames env Vec.!? agentId ? "Env.numMultiSites: missing agent id"
-
-numSites :: Env -> (AgentNameId, SiteNameId) -> Int
-numSites env (agentId, multisiteId) = mss ? "Env.numSites: missing site id"
-  where mss = (multiSites env Vec.!? agentId) >>= (Vec.!? multisiteId)
 

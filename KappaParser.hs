@@ -10,6 +10,7 @@ module KappaParser( SiteName, InternalState, BondLabel, BindingState(..), Site(.
 
 import Prelude hiding (init)
 import Control.Applicative ((<*))
+import Control.Monad (liftM)
 import Data.List (delete)
 
 import Text.Parsec
@@ -332,10 +333,9 @@ shapesP :: Parser [Shape]
 shapesP = m_reserved "shapes:" >> block energyShape
 
 ruleWithName :: Parser RuleWithName
-ruleWithName = do name <- try getName <|> return ""
+ruleWithName = do name <- try (m_identifier <* m_reservedOp "=") <|> return ""
                   r <- rule
                   return (name, r)
-  where getName = m_identifier <* m_reservedOp "="
 
 ruleP :: Parser RuleWithName
 ruleP = m_reserved "rule:" >> ruleWithName
@@ -347,35 +347,41 @@ rulesP = m_reserved "rules:" >> block ruleWithName
 cmP :: Parser CM
 cmP = m_reserved "contact-map:" >> m_commaSep1 cmAgent
 
+data Decl = CMDecl CM
+          | ShapeDecl Shape
+          | ShapesDecl [Shape]
+          | RuleDecl RuleWithName
+          | RulesDecl [RuleWithName]
+          | InitDecl Init
+          | ObsDecl Obs
+          | VarDecl Var
+
+createModule :: [Decl] -> Module
+createModule decls = foldr addDecl emptyModule decls
+  where addDecl (CMDecl cm) m = m{ contactMap = cm }
+        addDecl (ShapesDecl ss) m = m{ shapes = ss ++ shapes m }
+        addDecl (ShapeDecl s) m = m{ shapes = s : shapes m }
+        addDecl (RulesDecl rs) m = m{ rules = rs ++ rules m }
+        addDecl (RuleDecl r) m = m{ rules = r : rules m }
+        addDecl (InitDecl i) m = m{ inits = i : inits m }
+        addDecl (ObsDecl o) m = m{ obss = o : obss m }
+        addDecl (VarDecl v) m = m{ vars = v : vars m }
 
 moduleParser :: Parser Module
-moduleParser = m_whiteSpace >> kfParser emptyModule <* eof
-  where kfParser :: Module -> Parser Module
-        kfParser m = do cm <- cmP <|> return []
+moduleParser = m_whiteSpace >> kfParser <* eof
+  where kfParser :: Parser Module
+        kfParser = do decls <- many declParser
+                      return $ createModule decls
 
-                        individualShapes <- many shapeP
-                        shapesBlock <- shapesP <|> return []
-
-                        individualRules <- many ruleP
-                        rulesBlock <- rulesP <|> return []
-
-                        inits <- many initP
-                        obss <- many obsP
-                        vars <- many (try varP)
-
-                        let m' = append m cm (individualShapes ++ shapesBlock) (individualRules ++ rulesBlock) inits obss vars
-                        if m == m'
-                          then return m'
-                          else kfParser m'
-
-append m cm ss rs is os vs =
-  Module{ contactMap  = (contactMap m) ++ cm
-        , shapes      = (shapes m) ++ ss
-        , rules       = (rules m) ++ rs
-        , inits       = (inits m) ++ is
-        , obss        = (obss m) ++ os
-        , vars        = (vars m) ++ vs
-        }
+        declParser :: Parser Decl
+        declParser = liftM CMDecl cmP
+                 <|> liftM ShapeDecl shapeP
+                 <|> liftM ShapesDecl shapesP
+                 <|> liftM RuleDecl ruleP
+                 <|> liftM RulesDecl rulesP
+                 <|> liftM InitDecl initP
+                 <|> liftM ObsDecl obsP
+                 <|> liftM VarDecl varP
 
 
 -- Helper functions

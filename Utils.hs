@@ -1,11 +1,12 @@
 module Utils( fromMaybe
             , foldl', sortWith, groupWith
             , (?), updateVec
-            , foldM, liftM, join, guard, joinMaybes, select
+            , foldM, liftM, join, guard, joinMaybes, select, (<$>)
             , zipmap, mapKeys, reverseMap
             , (|.|)
             , frequencies, repeatedElems
             , infinity, cartesianProduct, combinationsOf, combinations
+            , indexedList
             ) where
 
 import qualified Data.Map as Map
@@ -14,6 +15,7 @@ import Data.Maybe (fromMaybe, fromJust)
 import Control.Monad
 import Data.List (foldl', group, sort, find)
 import Data.Tuple (swap)
+import Data.Functor ((<$>))
 import GHC.Exts (sortWith, groupWith)
 
 -- Better error reporting
@@ -33,6 +35,10 @@ updateVec vec vals fnName = if all (< len) indices
 joinMaybes :: MonadPlus m => m (Maybe a) -> m a
 joinMaybes = (>>= maybe mzero return)
 
+-- To understand this function let's instantiate it for the list monad:
+-- select :: [a] -> [(a,[a])]
+-- select [] = []
+-- select (a:as) = [(a,as)] ++ liftM (map (a:)) (select as)  =  (a,as) : map (fmap (a:)) (select as)  =  (a,as) : map (\(b,bs) -> (b,a:bs)) (select as)
 select :: MonadPlus m => [a] -> m (a,[a])
 select [] = mzero
 select (a:as) = return (a,as) `mplus` liftM (fmap (a :)) (select as)
@@ -81,4 +87,10 @@ combinationsOf k (x:xs) = map (x:) (combinationsOf (k-1) xs) ++ combinationsOf k
 
 combinations :: Int -> Int -> [[Int]]
 combinations k n = combinationsOf k [0..n-1]
+
+
+-- Vectors
+
+indexedList :: Vec.Vector a -> [(Int, a)]
+indexedList = Vec.toList . Vec.indexed
 

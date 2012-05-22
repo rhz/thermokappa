@@ -1,8 +1,7 @@
 module Misc where
 
 import qualified Data.Map as Map
-import qualified Data.MultiSet as MultiSet
-
+import qualified Data.Set as Set
 import qualified KappaParser as KP
 
 
@@ -10,7 +9,7 @@ largestPrefix :: KP.Rule -> Int
 largestPrefix (KP.Rule _ lhs rhs _) = fst . foldr findMismatch (0, False) $ zip lhs rhs
   where findMismatch _ (n, True) = (n, True)
         findMismatch (KP.Agent lname lintf, KP.Agent rname rintf) (n, False) =
-          if lname == rname && MultiSet.fromList (map KP.siteName lintf) == MultiSet.fromList (map KP.siteName rintf)
+          if lname == rname && Set.fromList (map KP.siteName lintf) == Set.fromList (map KP.siteName rintf)
             then (n+1, False)
             else (n, True)
 

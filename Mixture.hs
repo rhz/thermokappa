@@ -20,33 +20,35 @@ data Site = Site { internalState :: Maybe InternalStateId
   deriving (Show, Eq)
 
 type SiteId = Int
-type MultiSiteId = Int
-type MultiSite = Vec.Vector Site
-type Interface = Vec.Vector MultiSite -- indexed by MultiSiteId then by SiteId
+type Interface = Vec.Vector Site -- indexed by SiteId
 
 -- Agents
-type AgentNameId = Int
-
-data Agent = Agent { agentName :: AgentNameId
+data Agent = Agent { agentName :: E.AgentNameId
                    , interface :: Interface
                    }
   deriving (Show, Eq)
 
-foldInterface :: (MultiSiteId -> SiteId -> Site -> a -> a) -> a -> Agent -> a
-foldInterface f acc = Vec.ifoldr g acc . interface
-  where g multisiteId multisite acc = Vec.ifoldr (f multisiteId) acc multisite
+foldInterface :: (SiteId -> Site -> a -> a) -> a -> Agent -> a
+foldInterface f acc = Vec.ifoldr f acc . interface
 
-foldInterfaceM :: (Monad m) => (a -> MultiSiteId -> SiteId -> Site -> m a) -> a -> Agent -> m a
+foldInterfaceM :: (Monad m) => (a -> SiteId -> Site -> m a) -> a -> Agent -> m a
 foldInterfaceM f acc = Vec.foldM g acc . Vec.indexed . interface
-  where g acc (multisiteId, multisite) = Vec.foldM h acc (Vec.indexed multisite)
-          where h acc (siteId, site) = f acc multisiteId siteId site
+  where g acc (siteId, site) = f acc siteId site
 
 isBound :: Site -> Bool
 isBound Site{ bindingState = Bound } = True
 isBound _ = False
 
-emptyInterface :: E.Env -> AgentNameId -> Interface
-emptyInterface env agentName = Vec.replicate (E.numMultiSites env agentName) Vec.empty
+isUnspecified :: Site -> Bool
+isUnspecified site = site == unspecifiedSite
+
+unspecifiedSite :: Site
+unspecifiedSite = Site{ internalState = Nothing
+                      , bindingState = Unspecified
+                      }
+
+emptyInterface :: E.Env -> E.AgentNameId -> Interface
+emptyInterface env agentName = Vec.replicate (E.numSites env agentName) unspecifiedSite
 
 -- Mixtures
 type AgentId = Int
@@ -55,7 +57,7 @@ type MixtureId = Int
 
 type Agents = Vec.Vector Agent -- indexed by AgentId
 
-type Endpoint = (AgentId, MultiSiteId, SiteId)
+type Endpoint = (AgentId, SiteId)
 type Graph = Map.Map Endpoint Endpoint
 
 data Mixture = Mixture { agents :: Agents
@@ -63,76 +65,137 @@ data Mixture = Mixture { agents :: Agents
                        }
   deriving (Show, Eq)
 
-{-
-type Agent2Cc = Vec.Vector ComponentId -- indexed by AgentId
-
-type Name2Ids = Map.Map (AgentNameId, ComponentId) AgentIdSet
-type AgentIdSet = Set.Set AgentId
-
-data Mixture = Mixture { agents :: Agents
-                       , graph :: Graph
-                       , arity :: Int
-                       , getId :: MixtureId
-                       , idsOfNames :: Name2Ids
-                       , ccOfId :: Agent2Cc -- indexed by AgentId
-                       , sizeOfCc :: Vec.Vector Int -- indexed by ComponentId
-                       }
-  deriving (Show, Eq)
--}
-
 empty :: Mixture
 empty = Mixture{ agents = Vec.empty
-               , graph = Map.empty
+               , graph  = Map.empty
                }
 
-type LinkMap = Map.Map KP.BondLabel [Endpoint]
+agentIds :: Mixture -> [AgentId]
+agentIds m = [0..Vec.length (agents m) - 1]
+
+agentsWithId :: Mixture -> [(AgentId, Agent)]
+agentsWithId = indexedList . agents
+
+data Link = Link AgentId SiteId
+          | Closed
+type LinkMap = Map.Map KP.BondLabel Link
 
 addAgent :: E.Env -> Bool -> KP.Agent -> (Agents, Graph, LinkMap) -> (Agents, Graph, LinkMap)
 addAgent env isPattern (KP.Agent agentName intf) (mix, graph, linkMap) = (Vec.snoc mix agent, graph', linkMap')
-  where agent = Agent{ agentName = agentNameId
-                     , interface = interface
-                     }
-        agentId = Vec.length mix
-        agentNameId = E.idOfAgent env agentName ? missingAgent "Mixture.addAgent" agentName
+  where
+    agent = Agent{ agentName = agentNameId
+                 , interface = interface
+                 }
+    agentId = Vec.length mix
+    agentNameId = E.idOfAgent env agentName ? "Mixture.addAgent: " ++ missingAgent agentName
 
-        emptyInterface = Vec.replicate (E.numMultiSites env agentNameId) Vec.empty
-        (interface, graph', linkMap') = foldl' addSite (emptyInterface, graph, linkMap) intf
+    interface = emptyInterface env agentNameId Vec.// sites
+    sites = map getSite intf
+    getSite (KP.Site siteName int lnk) = (siteId, Site { internalState = internalStateId int
+                                                       , bindingState = bindingState lnk
+                                                       })
+      where siteId = E.idOfSite env (agentNameId, siteName) ? "Mixture.addAgent: " ++ missingSite agentName siteName
 
+            internalStateId "" | isPattern = Nothing
+                               | otherwise = Just (E.defaultInternalState env (agentNameId, siteId))
+            internalStateId intState = Just int
+              where int = E.idOfIntState env (agentNameId, siteId, intState) ? "Mixture.addAgent: " ++ missingIntState agentName siteName intState
 
-        addSite :: (Interface, Graph, LinkMap) -> KP.Site -> (Interface, Graph, LinkMap)
-        addSite (intf, graph, linkMap) (KP.Site siteName int lnk) = (intf', graph', linkMap')
-          where intf' = intf Vec.// [(multisiteId, Vec.snoc multisite site)]
-                site = Site { internalState = internalStateId int
-                            , bindingState = bindingState lnk
-                            }
-                multisiteId = E.idOfSite env (agentNameId, siteName) ? missingSite "Mixture.addAgent" agentName siteName
+            bindingState KP.Free = Free
+            bindingState (KP.Bound _) = Bound
+            bindingState KP.SemiLink | isPattern = SemiLink
+                                     | otherwise = error "Mixture.addAgent: only patterns are allowed to have semi links"
+            bindingState KP.Unspecified | isPattern = Unspecified
+                                        | otherwise = error "Mixture.addAgent: only patterns are allowed to have unspecified binding states"
 
-                internalStateId "" | isPattern = Nothing
-                                   | otherwise = Just (E.defaultInternalState env (agentNameId, multisiteId))
-                internalStateId int = Just (E.idOfIntState env (agentNameId, multisiteId, int) ? missingIntState "Mixture.addAgent" agentName siteName int)
+    links = do (KP.Site siteName _ (KP.Bound bondLabel)) <- intf
+               let siteId = E.idOfSite env (agentNameId, siteName) ? "Mixture.addAgent: " ++ missingSite agentName siteName
+               return (siteId, bondLabel)
 
-                bindingState KP.Free = Free
-                bindingState (KP.Bound _) = Bound
-                bindingState KP.SemiLink | isPattern = SemiLink
-                                         | otherwise = error "Mixture.addAgent: only patterns are allowed to have semi links"
-                bindingState KP.Unspecified | isPattern = Unspecified
-                                            | otherwise = error "Mixture.addAgent: only patterns are allowed to have unspecified binding states"
+    (graph', linkMap') = foldl' updateGraph (graph, linkMap) links
 
-                multisite = intf Vec.!? multisiteId ? missingSite "Mixture.addAgent" agentName siteName
-                siteId = Vec.length multisite
-
-                (graph', linkMap') = updateGraph lnk
-                updateGraph (KP.Bound bondLabel)
-                  | null endpoints         = (graph, linkMap')
-                  | length endpoints == 1  = (addLink (head endpoints) endpoint graph, linkMap')
-                  | otherwise              = error $ "Mixture.addAgent: bond label " ++ show bondLabel ++ " is binding more than two sites"
-                  where linkMap' = Map.insert bondLabel (endpoint:endpoints) linkMap
-                        endpoint = (agentId, multisiteId, siteId)
-                        endpoints = Map.findWithDefault [] bondLabel linkMap
-                updateGraph _ = (graph, linkMap)
+    updateGraph (graph, linkMap) (siteId, bondLabel) =
+      case Map.lookup bondLabel linkMap of
+        Nothing          ->  (graph,                                  Map.insert bondLabel (Link agentId siteId) linkMap)
+        Just (Link b j)  ->  (addLink (agentId, siteId) (b, j) graph, Map.insert bondLabel Closed                linkMap)
+        Just Closed      ->  error $ "Mixture.addAgent: bond label " ++ show bondLabel ++ " is binding more than two sites"
 
 
-{-
+evalKExpr :: E.Env -> Bool -> KP.KExpr -> Mixture
+evalKExpr env isPattern kexpr
+  | not $ null incompleteBonds = error $ "Mixture.evalKExpr: incomplete bond(s) " ++ show incompleteBonds
+  | otherwise = Mixture { agents = agents
+                        , graph = graph
+                        }
+  where (agents, graph, linkMap) = foldl' (flip $ addAgent env isPattern) (Vec.empty, Map.empty, Map.empty) kexpr
+        incompleteBonds = map fst $ filter (not . isClosed . snd) (Map.toList linkMap)
+        isClosed Closed = True
+        isClosed _ = False
+
+
+follow :: Mixture -> Endpoint -> Maybe Endpoint
+follow = flip Map.lookup . graph
+
+addLink :: Endpoint -> Endpoint -> Graph -> Graph
+addLink ep1 ep2 = Map.insert ep1 ep2 . Map.insert ep2 ep1
+
+
+toKappa :: E.Env -> Mixture -> String
+toKappa env mix = intercalate ", " . Vec.toList . Vec.imap agentStr $ agents mix
+  where
+    (linkMap, _) = Map.foldrWithKey addLink (Map.empty, 1) (graph mix)
+    addLink ep1 ep2 (linkMap, n) | Map.member ep1 linkMap  =  (linkMap, n)
+                                 | otherwise               =  (Map.insert ep1 n $ Map.insert ep2 n linkMap, n + 1)
+
+    agentStr :: AgentId -> Agent -> String
+    agentStr agentId agent = agentNameStr ++ "(" ++ intercalate ", " sites ++ ")"
+      where
+        agentNameId  = agentName agent
+        agentNameStr = E.agentOfId env agentNameId ? "Mixture.toKappa: missing agent name id"
+        sites = filter (not . null) . Vec.toList $ Vec.imap siteStr (interface agent)
+
+        siteStr :: SiteId -> Site -> String
+        siteStr _ (Site{ internalState = Nothing, bindingState = Unspecified }) = ""
+        siteStr siteId site = siteName ++ internalStateStr (internalState site) ++ bindingStateStr (bindingState site)
+          where
+            siteName = E.siteOfId env (agentNameId, siteId) ? "Mixture.toKappa: missing site id"
+
+            internalStateStr Nothing = ""
+            internalStateStr (Just int) = "~" ++ intStateStr
+              where intStateStr = E.intStateOfId env (agentNameId, siteId, int) ? "Mixture.toKappa: missing internal state id"
+
+            bindingStateStr Free = ""
+            bindingStateStr Unspecified = "?"
+            bindingStateStr SemiLink = "!_"
+            bindingStateStr Bound = "!" ++ show bondLabel
+              where bondLabel = Map.lookup (agentId, siteId) linkMap ? "Mixture.toKappa: couldn't find endpoint " ++ show (agentId, siteId)
+
+valid :: Mixture -> Bool
+valid mix@(Mixture{ graph = graph }) = all isInMix (Map.toList graph) && Vec.all isInGraph boundSites
+  where boundSites = do (aId, agent) <- Vec.indexed $ agents mix
+                        (sId, Site{ bindingState = Bound }) <- Vec.indexed $ interface agent
+                        return (aId, sId)
+
+        isInMix (ep1, ep2) = ep1 `Vec.elem` boundSites && ep2 `Vec.elem` boundSites
+
+        isInGraph ep1 = (Map.lookup ep1 graph >>= flip Map.lookup graph) == Just ep1
+
+
+-- Error reporting
+missingAgent :: KP.AgentName -> String
+missingAgent agentName =
+  "agent '" ++ agentName ++ "' is not mentioned in contact map"
+
+missingSite :: KP.AgentName -> KP.SiteName -> String
+missingSite agentName siteName =
+  "site '" ++ siteName ++ "' in agent '" ++ agentName ++ "' is not mentioned in contact map"
+
+missingIntState :: KP.AgentName -> KP.SiteName -> KP.InternalState -> String
+missingIntState agentName siteName intState =
+  "internal state '" ++ intState ++ "' in agent '" ++ agentName ++ "' and site '" ++ siteName ++ "' is not mentioned in contact map"
+
+
+{- Old code
 -- Returns the list with all the agents that are in the same component as agentId
 component :: E.Env -> Agents -> Graph -> AgentIdSet -> AgentId -> ([AgentId], AgentIdSet)
 component env agents graph visited agentId = explore ([agentId], [], visited)
@@ -182,83 +245,4 @@ createMixture env mixId agents graph = Mixture { agents = agents
         nameAndCc agentId (Agent{ agentName = agentNameId }) = ((agentNameId, ccId), agentId)
           where ccId = ccOfId Vec.! agentId
 -}
-
-
-evalKExpr :: E.Env -> Bool -> KP.KExpr -> Mixture
-evalKExpr env isPattern kexpr
-  | not $ null incompleteBonds = error $ "Mixture.evalKExpr: incomplete bond(s) " ++ show incompleteBonds
-  | otherwise = Mixture { agents = agents
-                        , graph = graph
-                        }
-  where (agents, graph, linkMap) = foldl' (flip $ addAgent env isPattern) (Vec.empty, Map.empty, Map.empty) kexpr
-        incompleteBonds = map fst $ filter ((/= 2) . length . snd) (Map.toList linkMap)
-
-
-follow :: Mixture -> Endpoint -> Maybe Endpoint
-follow = flip Map.lookup . graph
-
-addLink :: Endpoint -> Endpoint -> Graph -> Graph
-addLink ep1 ep2 = Map.insert ep1 ep2 . Map.insert ep2 ep1
-
-
-
-toKappa :: E.Env -> Mixture -> String
-toKappa env mix = intercalate ", " . Vec.toList . Vec.imap agentStr $ agents mix
-  where
-    (linkMap, _) = Map.foldrWithKey addLink (Map.empty, 1) (graph mix)
-    addLink ep1 ep2 (linkMap, n) | Map.member ep1 linkMap  = (linkMap, n)
-                                 | otherwise               = (Map.insert ep1 n $ Map.insert ep2 n linkMap, n + 1)
-
-    agentStr :: AgentId -> Agent -> String
-    agentStr agentId agent = agentNameStr ++ "(" ++ intercalate ", " sites ++ ")"
-      where
-        agentNameId  = agentName agent
-        agentNameStr = E.agentOfId env agentNameId ? "Mixture.toKappa: missing agent name id"
-        sites = concat . Vec.toList $ Vec.imap siteStr (interface agent)
-
-        siteStr multisiteId = Vec.toList . Vec.imap multisiteStr
-          where
-            multisiteStr siteId site = siteName ++ internalStateStr (internalState site) ++ bindingStateStr (bindingState site)
-              where
-                siteName = E.siteOfId env (agentNameId, multisiteId) ? "Mixture.toKappa: missing site id"
-
-                internalStateStr Nothing = ""
-                internalStateStr (Just int) = "~" ++ (E.intStateOfId env (agentNameId, multisiteId, int) ? "Mixture.toKappa: missing internal state id")
-
-                bindingStateStr Free = ""
-                bindingStateStr Unspecified = "?"
-                bindingStateStr SemiLink = "!_"
-                bindingStateStr Bound = "!" ++ show (Map.lookup (agentId, multisiteId, siteId) linkMap ?
-                                                          "Mixture.toKappa: couldn't find endpoint " ++ show (agentId, multisiteId, siteId))
-
-valid :: Mixture -> Bool
-valid mix@(Mixture{ graph = graph }) = all isInMix (Map.toList graph) && Vec.all isInGraph boundSites
-  where boundSites = do (aId, agent) <- Vec.indexed $ agents mix
-                        (msId, ms) <- Vec.indexed $ interface agent
-                        (sId, Site{ bindingState = Bound }) <- Vec.indexed ms
-                        return (aId, msId, sId)
-
-        isInMix (ep1, ep2) = ep1 `Vec.elem` boundSites && ep2 `Vec.elem` boundSites
-
-        isInGraph ep1 = (Map.lookup ep1 graph >>= flip Map.lookup graph) == Just ep1
-
-
--- Error reporting
-missingAgent :: String -> KP.AgentName -> String
-missingAgent fnName agentName = fnName ++ ": agent '" ++ agentName ++ "' is not mentioned in contact map"
-
-missingAgentId :: E.Env -> String -> AgentId -> String
-missingAgentId env fnName agentId = missingAgent fnName (E.agentOfId env agentId ? "Mixture.missingAgentId: missing agent name id")
-
-missingSite :: String -> KP.AgentName -> KP.SiteName -> String
-missingSite fnName agentName siteName = fnName ++ ": site '" ++ siteName ++ "' in agent '" ++ agentName ++ "' is not mentioned in contact map"
-
-missingSiteId :: E.Env -> String -> AgentNameId -> MultiSiteId -> String
-missingSiteId env fnName agentNameId multisiteId = missingSite fnName agentName siteName
-  where agentName = E.agentOfId env agentNameId ? "Mixture.missingSiteId: misssing agent name id"
-        siteName = E.siteOfId env (agentNameId, multisiteId) ? "Mixture.missingSiteId: missing site id"
-
-missingIntState :: String -> KP.AgentName -> KP.SiteName -> KP.InternalState -> String
-missingIntState fnName agentName siteName intState =
-  fnName ++ ": internal state '" ++ intState ++ "' in agent '" ++ agentName ++ "' and site '" ++ siteName ++ "' is not mentioned in contact map"
 
