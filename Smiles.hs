@@ -27,7 +27,7 @@ toSmiles glucose c1 c4 c6 kexpr = "O" ++ smile (Just anchor)
 
         smile :: Maybe Agent -> String
         smile Nothing = ""
-        smile (Just (Agent _ intf)) = glucopyranose (smile $ neighbourAt "C4") (smile $ neighbourAt "C6")
+        smile (Just (Agent _ intf)) = glucopyranose (smile $ neighbourAt c4) (smile $ neighbourAt c6)
           where neighbourAt sn = do (Site _ _ (Bound bl)) <- find ((== sn) . siteName) intf
                                     (a1, sn1, sn2, a2) <- Map.lookup bl lm
                                     if sn1 == sn
@@ -41,7 +41,7 @@ main = do inputFilename : glucose : c1 : c4 : c6 : _ <- getArgs
               smiles = map (toSmiles glucose c1 c4 c6)  kexprs
 
               basename = dropExtension inputFilename
-              outputFilenames = map (++ ".smi") . map ((basename ++ "-") ++) $ map show [0..length smiles]
+              outputFilenames = map (++ ".smi") . map ((basename ++ "-") ++) $ map show [1..length smiles]
 
           zipWithM_ writeFile outputFilenames smiles
 

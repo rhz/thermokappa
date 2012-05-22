@@ -29,7 +29,7 @@ main = do inputFilename : _ <- getArgs
               dDots = map (detailedDot env m1 m2) m3s
 
               basename = dropExtension inputFilename
-              outputFilenames = map (++ ".dot") . map ((basename ++ "-") ++) $ map show [0..length m3s]
+              outputFilenames = map (++ ".dot") . map ((basename ++ "-") ++) $ map show [1..length m3s]
 
           writeFile (basename ++ ".dot") cDot
           zipWithM_ writeFile outputFilenames dDots
