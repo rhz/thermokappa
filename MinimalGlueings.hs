@@ -29,7 +29,8 @@ main = do inputFilename : _ <- getArgs
               dDots = map (detailedDot env m1 m2) m3s
 
               basename = dropExtension inputFilename
-              outputFilenames = map (++ ".dot") . map ((basename ++ "-") ++) $ map show [1..length m3s]
+              outputFilenames = map makeOutFn [1..length dDots]
+              makeOutFn n = basename ++ "-" ++ show n ++ ".dot"
 
           writeFile (basename ++ ".dot") cDot
           zipWithM_ writeFile outputFilenames dDots
@@ -67,14 +68,11 @@ detailedDot env m1 m2 (m3, (m1AgentMap, m2AgentMap)) =
                              concatMap linkDot links ++
                              "  }\n"
           where nodes = Vec.imap nodeName $ M.agents mix
-                nodeName i agent = prefix ++ agentName agent ++ show i
+                nodeName i  agent  = prefix ++ agentName  agent ++ show i
+                nodeDot (i, agent) = "    " ++ nodeName i agent ++ " [ label = \"" ++ agentName agent ++ "\" ];\n"
 
-                nodeDot  (i, agent) = "    " ++ nodeName i agent ++ " [ label = \"" ++ agentName agent ++ "\" ];\n"
-
-                links = map Set.toList . nub . map toSet . Map.toList $ M.graph mix
-                toSet (a, b) = Set.insert a $ Set.singleton b
-
-                linkDot [(aId1, sId1), (aId2, sId2)] =
+                links = Set.toList $ M.links mix
+                linkDot ((aId1, sId1), (aId2, sId2)) =
                   "    " ++ (nodes Vec.!? aId1 ? "Matching.detailedDot: " ++ show aId1 ++ ", " ++ show nodes ++ ", " ++ show (M.toKappa env mix)) ++
                   " -> " ++ (nodes Vec.!? aId2 ? "Matching.detailedDot: " ++ show aId2 ++ ", " ++ show nodes ++ ", " ++ show (M.toKappa env mix)) ++
                   " [ headlabel = \"" ++ siteName aId1 sId1 mix ++ "\"" ++

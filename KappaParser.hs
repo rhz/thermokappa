@@ -145,7 +145,7 @@ chainExpr = do first <- agent
                return $ createChain first second last
 
 kexpr :: Parser KExpr
-kexpr = do xs <- m_commaSep (try chainExpr <|> singleAgentExpr) <?> "kappa expression"
+kexpr = do xs <- m_commaSep1 (try chainExpr <|> singleAgentExpr) <?> "kappa expression"
            return $ concat xs
   where singleAgentExpr = do a <- agent
                              return [a]

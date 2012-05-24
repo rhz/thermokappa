@@ -39,6 +39,10 @@ isBound :: Site -> Bool
 isBound Site{ bindingState = Bound } = True
 isBound _ = False
 
+isFree :: Site -> Bool
+isFree Site{ bindingState = Free } = True
+isFree _ = False
+
 isUnspecified :: Site -> Bool
 isUnspecified site = site == unspecifiedSite
 
@@ -139,13 +143,17 @@ follow = flip Map.lookup . graph
 addLink :: Endpoint -> Endpoint -> Graph -> Graph
 addLink ep1 ep2 = Map.insert ep1 ep2 . Map.insert ep2 ep1
 
+links :: Mixture -> Set.Set (Endpoint, Endpoint)
+links mix = Map.foldrWithKey add Set.empty (graph mix)
+  where add  ep1  ep2 linkSet
+          | (ep2, ep1) `Set.member` linkSet = linkSet
+          | otherwise = Set.insert (ep1, ep2) linkSet
 
 toKappa :: E.Env -> Mixture -> String
-toKappa env mix = intercalate ", " . Vec.toList . Vec.imap agentStr $ agents mix
+toKappa env mix = intercalate ", " . Vec.toList $ Vec.imap agentStr (agents mix)
   where
-    (linkMap, _) = Map.foldrWithKey addLink (Map.empty, 1) (graph mix)
-    addLink ep1 ep2 (linkMap, n) | Map.member ep1 linkMap  =  (linkMap, n)
-                                 | otherwise               =  (Map.insert ep1 n $ Map.insert ep2 n linkMap, n + 1)
+    linkSet = Set.toList $ links mix
+    linkMap = zipmap (map fst linkSet) [1..] `Map.union` zipmap (map snd linkSet) [1..]
 
     agentStr :: AgentId -> Agent -> String
     agentStr agentId agent = agentNameStr ++ "(" ++ intercalate ", " sites ++ ")"
