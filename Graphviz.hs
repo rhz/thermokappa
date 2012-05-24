@@ -32,8 +32,8 @@ toDot env mix =
         linkDot ((aId1, sId1), (aId2, sId2)) =
           "  "   ++ (nodes Vec.! aId1) ++
           " -- " ++ (nodes Vec.! aId2) ++
-          " [ headlabel = \"" ++ siteName aId1 sId1 ++ "\"" ++
-          " , taillabel = \"" ++ siteName aId2 sId2 ++ "\" ];\n"
+          " [ taillabel = \"" ++ siteName aId1 sId1 ++ "\"" ++
+          " , headlabel = \"" ++ siteName aId2 sId2 ++ "\" ];\n"
 
         agentName agent = E.agentOfId env (M.agentName agent) ? "Matching.detailedDot: missing agent name id"
         siteName aId sId = E.siteOfId env (M.agentName (M.agents mix Vec.! aId), sId) ? "Matching.detailedDot: missing site id"

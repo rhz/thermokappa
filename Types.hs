@@ -40,7 +40,7 @@ check m@(Module{ contactMap = cm }) = mapM_ printErrors (ruleErrors ++ initError
 
 
 checkExpr :: CM -> KExpr -> [Error]
-checkExpr cm kexpr = concatMap stateErrors kexpr ++ Map.foldr linkErrors [] lm
+checkExpr cm kexpr = concatMap stateErrors kexpr ++ Map.fold linkErrors [] lm -- TODO should be Map.foldr, but I'm leaving it as is for compatibility
   where stateErrors :: Agent -> [Error]
         stateErrors a@(Agent name intf) = mapMaybe stateError intf
           where stateError :: Site -> Maybe Error
