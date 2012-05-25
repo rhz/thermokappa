@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module Mixture where
 
 import qualified Data.Vector as Vec
@@ -84,8 +86,8 @@ data Link = Link AgentId SiteId
           | Closed
 type LinkMap = Map.Map KP.BondLabel Link
 
-addAgent :: E.Env -> Bool -> KP.Agent -> (Agents, Graph, LinkMap) -> (Agents, Graph, LinkMap)
-addAgent env isPattern (KP.Agent agentName intf) (mix, graph, linkMap) = (Vec.snoc mix agent, graph', linkMap')
+addAgent :: E.Env -> Bool -> (Agents, Graph, LinkMap) -> KP.Agent -> (Agents, Graph, LinkMap)
+addAgent env isPattern (!mix, !graph, !linkMap) (KP.Agent agentName intf) = (Vec.snoc mix agent, graph', linkMap')
   where
     agent = Agent{ agentName = agentNameId
                  , interface = interface
@@ -131,7 +133,7 @@ evalKExpr env isPattern kexpr
   | otherwise = Mixture { agents = agents
                         , graph = graph
                         }
-  where (agents, graph, linkMap) = foldl' (flip $ addAgent env isPattern) (Vec.empty, Map.empty, Map.empty) kexpr
+  where (agents, graph, linkMap) = foldl' (addAgent env isPattern) (Vec.empty, Map.empty, Map.empty) kexpr
         incompleteBonds = map fst $ filter (not . isClosed . snd) (Map.toList linkMap)
         isClosed Closed = True
         isClosed _ = False
