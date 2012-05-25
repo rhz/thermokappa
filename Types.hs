@@ -63,19 +63,20 @@ checkExpr cm kexpr = concatMap stateErrors kexpr ++ Map.fold linkErrors [] lm --
                 isSite (CMSite sn _ _) = sn == i
 
 -- Inference
+-- TODO make this function stack-overflow-free when not optimized
 inferCM :: [KExpr] -> CM
-inferCM kexprs = map replicateSites . toCM $ foldr addKExpr Map.empty kexprs
+inferCM kexprs = toCM $ foldl' addKExpr Map.empty kexprs
   where
-    addKExpr kexpr cm = foldr addAgent cm kexpr
+    addKExpr cm kexpr = foldl' addAgent cm kexpr
       where
         lm = linkMap kexpr
 
-        addAgent (Agent agentName intf) cm = Map.insert agentName cmIntf' cm
+        addAgent cm (Agent agentName intf) = Map.insert agentName cmIntf' cm
           where
             cmIntf  = Map.findWithDefault Map.empty agentName cm
-            cmIntf' = foldr addSite cmIntf intf
+            cmIntf' = foldl' addSite cmIntf intf
 
-            addSite (Site siteName int lnk) cmIntf = Map.insert siteName cmSite' cmIntf
+            addSite cmIntf (Site siteName int lnk) = Map.insert siteName cmSite' cmIntf
               where
                 cmSite  = Map.findWithDefault (CMSite siteName [] []) siteName cmIntf
                 cmSite' = addInt int $ addLnk lnk cmSite
@@ -96,15 +97,4 @@ inferCM kexprs = map replicateSites . toCM $ foldr addKExpr Map.empty kexprs
 
     toCM cm = map toCMAgent $ Map.toList cm
     toCMAgent (agentName, cmIntf) = CMAgent agentName (Map.elems cmIntf)
-
-    siteCount = foldr (Map.unionWith max) Map.empty $ concatMap (map countSite) kexprs
-
-    countSite (Agent agentName intf) = Map.fromList $ frequencies siteNames
-      where siteNames = map (agentName, ) $ map siteName intf
-
-    replicateSites (CMAgent agentName intf) = CMAgent agentName intf'
-      where intf' = foldr replicateSite [] intf
-
-            replicateSite site@(CMSite siteName _ _) intf = replicate count site ++ intf
-              where count = Map.lookup (agentName, siteName) siteCount ? "Types.inferCM: site not found"
 

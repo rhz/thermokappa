@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module KappaParser( SiteName, InternalState, BondLabel, BindingState(..), Site(..), Interface, siteName, agentName
                   , AgentName, Agent(..), KExpr, Rate, Rule(..), RuleName, RuleWithName
                   , CMBindingState(..), CMSite(..), CMIntf, CMAgent(..), CM -- CM types
@@ -162,10 +164,10 @@ rule = do lhs <- kexpr
 -- Contact Map
 data CMBindingState = CMBound AgentName SiteName
   deriving (Show, Eq)
-data CMSite = CMSite SiteName [InternalState] [CMBindingState]
+data CMSite = CMSite !SiteName ![InternalState] ![CMBindingState]
   deriving (Show, Eq)
 type CMIntf = [CMSite]
-data CMAgent = CMAgent AgentName CMIntf
+data CMAgent = CMAgent !AgentName !CMIntf
   deriving (Show, Eq)
 type CM = [CMAgent]
 
@@ -357,15 +359,15 @@ data Decl = CMDecl CM
           | VarDecl Var
 
 createModule :: [Decl] -> Module
-createModule decls = foldr addDecl emptyModule decls
-  where addDecl (CMDecl cm) m = m{ contactMap = cm }
-        addDecl (ShapesDecl ss) m = m{ shapes = ss ++ shapes m }
-        addDecl (ShapeDecl s) m = m{ shapes = s : shapes m }
-        addDecl (RulesDecl rs) m = m{ rules = rs ++ rules m }
-        addDecl (RuleDecl r) m = m{ rules = r : rules m }
-        addDecl (InitDecl i) m = m{ inits = i : inits m }
-        addDecl (ObsDecl o) m = m{ obss = o : obss m }
-        addDecl (VarDecl v) m = m{ vars = v : vars m }
+createModule decls = foldr (flip addDecl) emptyModule decls
+  where addDecl m (CMDecl cm)     = m{ contactMap = cm }
+        addDecl m (ShapesDecl ss) = m{ shapes = ss ++ shapes m }
+        addDecl m (ShapeDecl s)   = m{ shapes = s : shapes m }
+        addDecl m (RulesDecl rs)  = m{ rules = rs ++ rules m }
+        addDecl m (RuleDecl r)    = m{ rules = r : rules m }
+        addDecl m (InitDecl i)    = m{ inits = i : inits m }
+        addDecl m (ObsDecl o)     = m{ obss = o : obss m }
+        addDecl m (VarDecl v)     = m{ vars = v : vars m }
 
 moduleParser :: Parser Module
 moduleParser = m_whiteSpace >> kfParser <* eof
