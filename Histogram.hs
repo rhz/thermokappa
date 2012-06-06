@@ -16,8 +16,8 @@ import System.FilePath (dropExtension)
 type Depth = Int
 type Histogram = Map.Map Depth Int
 
-histogram :: E.AgentNameId -> E.SiteNameId -> E.SiteNameId -> E.SiteNameId -> M.Mixture -> (Histogram, Histogram)
-histogram glucose c1 c4 c6 mix = (toHist . depth 1 |.| toHist . branch 1 . Just) (findRoot 0)
+histogram :: E.AgentNameId -> E.SiteNameId -> E.SiteNameId -> E.SiteNameId -> M.Mixture -> (Histogram, Histogram, Histogram)
+histogram glucose c1 c4 c6 mix = (makeHist $ depth 1 root, makeHist $ branch 1 (Just root), makeHist $ chainLen 0 (Just root))
   where depth :: Int -> M.AgentId -> [Depth]
         depth n aId = case (nb4, nb6) of
                         (Nothing, Nothing)       -> [n]
@@ -35,7 +35,15 @@ histogram glucose c1 c4 c6 mix = (toHist . depth 1 |.| toHist . branch 1 . Just)
           where nb4 = fst <$> M.follow mix (aId, c4)
                 nb6 = fst <$> M.follow mix (aId, c6)
 
-        toHist = Map.fromList . frequencies
+        chainLen :: Int -> Maybe M.AgentId -> [Depth]
+        chainLen n Nothing | n == 0    = []
+                           | otherwise = [n]
+        chainLen n (Just aId) = branch (n+1) nb4 ++ branch 0 nb6
+          where nb4 = fst <$> M.follow mix (aId, c4)
+                nb6 = fst <$> M.follow mix (aId, c6)
+
+        root = findRoot 0
+        makeHist = Map.fromList . frequencies
 
         findRoot :: M.AgentId -> M.AgentId
         findRoot possibleRootId -- the root needs to be a glucose and have the C1 site free
@@ -44,8 +52,8 @@ histogram glucose c1 c4 c6 mix = (toHist . depth 1 |.| toHist . branch 1 . Just)
           where M.Agent{ M.agentName = name, M.interface = intf } = M.agents mix Vec.! possibleRootId
                 (nbId, _) = M.follow mix (possibleRootId, c1) ? "Histogram: site C1 is not free nor bound"
 
-toTable :: Histogram -> String
-toTable hist = intercalate "\n" . map toRow $ Map.toAscList hist
+makeTable :: Histogram -> String
+makeTable hist = intercalate "\n" . map toRow $ Map.toAscList hist
   where toRow (x, freq) = show x ++ " " ++ show freq
 
 main :: IO ()
@@ -60,12 +68,13 @@ main = do inputFilename : glucose : c1 : c4 : c6 : _ <- getArgs
               c4Id = E.idOfSite env (glucoseId, c4) ? "Histogram: no '" ++ c4 ++ "' site in '" ++ glucose ++ "' agent"
               c6Id = E.idOfSite env (glucoseId, c6) ? "Histogram: no '" ++ c6 ++ "' site in '" ++ glucose ++ "' agent"
 
-              (depths, branchs) = unzip $ map (histogram glucoseId c1Id c4Id c6Id . M.evalKExpr env False) kexprs
+              (depths, branchs, chainLens) = unzip3 $ map (histogram glucoseId c1Id c4Id c6Id . M.evalKExpr env False) kexprs
 
               basename = dropExtension inputFilename
               outputFilenames suffix = map (makeOutFn suffix) [1..length kexprs]
               makeOutFn suffix n = basename ++ "-" ++ show n ++ "-" ++ suffix ++ ".hist"
 
-          zipWithM_ writeFile (outputFilenames "depth") (map toTable depths)
-          zipWithM_ writeFile (outputFilenames "branch") (map toTable branchs)
+          zipWithM_ writeFile (outputFilenames "depth")     (map makeTable depths)
+          zipWithM_ writeFile (outputFilenames "branch")    (map makeTable branchs)
+          zipWithM_ writeFile (outputFilenames "chain-len") (map makeTable chainLens)
 
