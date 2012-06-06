@@ -17,7 +17,7 @@ type InternalStateId = Int
 data BindingState = Free | SemiLink | Bound | Unspecified -- WLD = Unspecified
   deriving (Show, Eq)
 data Site = Site { internalState :: Maybe InternalStateId
-                 , bindingState :: BindingState
+                 , bindingState  :: BindingState
                  }
   deriving (Show, Eq)
 
@@ -56,6 +56,22 @@ unspecifiedSite = Site{ internalState = Nothing
 emptyInterface :: E.Env -> E.AgentNameId -> Interface
 emptyInterface env agentName = Vec.replicate (E.numSites env agentName) unspecifiedSite
 
+setLnk :: BindingState -> Agent -> SiteId -> Agent
+setLnk lnk a sId = a{ interface = interface a Vec.// [(sId, s')] }
+  where s = interface a Vec.!? sId ? "Mixture.setLnk: site id not found"
+        s' = s{ bindingState = lnk }
+
+setInt :: Maybe InternalStateId -> Agent -> SiteId -> Agent
+setInt int a sId = a{ interface = interface a Vec.// [(sId, s')] }
+  where s = interface a Vec.!? sId ? "Mixture.setLnk: site id not found"
+        s' = s{ internalState = int }
+
+siteIds :: Agent -> [SiteId]
+siteIds a = [0..Vec.length (interface a) - 1]
+
+sitesWithId :: Agent -> [(SiteId, Site)]
+sitesWithId = indexedList . interface
+
 -- Mixtures
 type AgentId = Int
 type ComponentId = Int
@@ -86,13 +102,12 @@ data Link = Link AgentId SiteId
           | Closed
 type LinkMap = Map.Map KP.BondLabel Link
 
-addAgent :: E.Env -> Bool -> (Agents, Graph, LinkMap) -> KP.Agent -> (Agents, Graph, LinkMap)
-addAgent env isPattern (!mix, !graph, !linkMap) (KP.Agent agentName intf) = (Vec.snoc mix agent, graph', linkMap')
+addAgent :: E.Env -> Bool -> ([Agent], Graph, LinkMap, AgentId) -> KP.Agent -> ([Agent], Graph, LinkMap, AgentId)
+addAgent env isPattern (!mix, !graph, !linkMap, !agentId) (KP.Agent agentName intf) = (agent:mix, graph', linkMap', agentId+1)
   where
     agent = Agent{ agentName = agentNameId
                  , interface = interface
                  }
-    agentId = Vec.length mix
     agentNameId = E.idOfAgent env agentName ? "Mixture.addAgent: " ++ missingAgent agentName
 
     interface = emptyInterface env agentNameId Vec.// sites
@@ -120,9 +135,9 @@ addAgent env isPattern (!mix, !graph, !linkMap) (KP.Agent agentName intf) = (Vec
 
     (graph', linkMap') = foldl' updateGraph (graph, linkMap) links
 
-    updateGraph (graph, linkMap) (siteId, bondLabel) =
+    updateGraph (!graph, !linkMap) (siteId, bondLabel) =
       case Map.lookup bondLabel linkMap of
-        Nothing          ->  (graph,                                  Map.insert bondLabel (Link agentId siteId) linkMap)
+        Nothing          ->  (                                 graph, Map.insert bondLabel (Link agentId siteId) linkMap)
         Just (Link b j)  ->  (addLink (agentId, siteId) (b, j) graph, Map.insert bondLabel Closed                linkMap)
         Just Closed      ->  error $ "Mixture.addAgent: bond label " ++ show bondLabel ++ " is binding more than two sites"
 
@@ -130,10 +145,10 @@ addAgent env isPattern (!mix, !graph, !linkMap) (KP.Agent agentName intf) = (Vec
 evalKExpr :: E.Env -> Bool -> KP.KExpr -> Mixture
 evalKExpr env isPattern kexpr
   | not $ null incompleteBonds = error $ "Mixture.evalKExpr: incomplete bond(s) " ++ show incompleteBonds
-  | otherwise = Mixture { agents = agents
+  | otherwise = Mixture { agents = Vec.fromList $ reverse agents
                         , graph = graph
                         }
-  where (agents, graph, linkMap) = foldl' (addAgent env isPattern) (Vec.empty, Map.empty, Map.empty) kexpr
+  where (agents, graph, linkMap, _) = foldl' (addAgent env isPattern) ([], Map.empty, Map.empty, 0) kexpr
         incompleteBonds = map fst $ filter (not . isClosed . snd) (Map.toList linkMap)
         isClosed Closed = True
         isClosed _ = False
@@ -144,6 +159,26 @@ follow = flip Map.lookup . graph
 
 addLink :: Endpoint -> Endpoint -> Graph -> Graph
 addLink ep1 ep2 = Map.insert ep1 ep2 . Map.insert ep2 ep1
+
+removeLink :: Endpoint -> Endpoint -> Graph -> Graph
+removeLink ep1 ep2 = Map.delete ep1 . Map.delete ep2
+
+setLnkInMix :: BindingState -> Endpoint -> Mixture -> Mixture
+setLnkInMix lnk (aId, sId) mix = mix{ agents = agents mix Vec.// [(aId, a')] }
+  where a = agents mix Vec.!? aId ? "Mixture.setLnk: agent id not found"
+        a' = setLnk lnk a sId
+
+setIntInMix :: Maybe InternalStateId -> Endpoint -> Mixture -> Mixture
+setIntInMix int (aId, sId) mix = mix{ agents = agents mix Vec.// [(aId, a')] }
+  where a = agents mix Vec.!? aId ? "Mixture.setLnk: agent id not found"
+        a' = setInt int a sId
+
+bind :: Endpoint -> Endpoint -> Mixture -> Mixture
+bind (a, i) (b, j) mix = setLnkInMix Bound (a, i) $ setLnkInMix Bound (b, j) mix{ graph = addLink (a, i) (b, j) (graph mix) }
+
+unbind :: Endpoint -> Mixture -> Mixture
+unbind (a, i) mix = setLnkInMix Free (a, i) $ setLnkInMix Free (b, j) mix{ graph = removeLink (a, i) (b, j) (graph mix) }
+  where (b, j) = follow mix (a, i) ? "Mixture.unbind: " ++ show (a, i) ++ " is not bound"
 
 links :: Mixture -> Set.Set (Endpoint, Endpoint)
 links mix = Map.foldrWithKey add Set.empty (graph mix)
