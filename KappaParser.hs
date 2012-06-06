@@ -11,7 +11,7 @@ module KappaParser( SiteName, InternalState, BondLabel, BindingState(..), Site(.
                   ) where
 
 import Prelude hiding (init)
-import Control.Applicative ((<*))
+import Control.Applicative ((<*), (<$>))
 import Control.Monad (liftM)
 import Data.List (delete)
 
@@ -29,9 +29,9 @@ type Parser a = IndentParser String () a
 type SiteName = String
 type InternalState = String
 type BondLabel = Int
-data BindingState = Free | SemiLink | Bound BondLabel | Unspecified
+data BindingState = Free | SemiLink | Bound !BondLabel | Unspecified
   deriving (Show, Eq, Ord)
-data Site = Site SiteName InternalState BindingState
+data Site = Site !SiteName !InternalState !BindingState
   deriving (Show, Eq, Ord)
 
 siteName :: Site -> SiteName
@@ -39,7 +39,7 @@ siteName (Site name _ _) = name
 
 type AgentName = String
 type Interface = [Site]
-data Agent = Agent AgentName Interface
+data Agent = Agent !AgentName !Interface
   deriving (Show, Eq, Ord)
 
 agentName :: Agent -> AgentName
@@ -91,26 +91,24 @@ interface = m_commaSep site
 site :: Parser Site
 site = do siteName <- m_identifier <?> "site name"
           internalState <- (m_symbol "~" >> m_identifier) <|> return ""
-          bindingState <- (m_symbol "!" >> (do bondLabel <- m_decimal
-                                               return . Bound . fromIntegral $ bondLabel
-                                        <|> do m_symbol "_"
-                                               return SemiLink))
-                          <|> (m_symbol "?" >> return Unspecified)
-                          <|> return Free
-          return $ Site siteName internalState bindingState
+          bindingState  <- (m_symbol "!" >> (bondLabel <|> semiLink))
+                       <|> (m_symbol "?" >> return Unspecified)
+                       <|> return Free
+          return $! Site siteName internalState bindingState
+  where bondLabel = do bondLabel <- m_decimal <?> "bond label"
+                       return $ Bound (fromIntegral bondLabel)
+        semiLink  = m_symbol "_" >> return SemiLink
 
 createChain :: Agent -> Agent -> Agent -> KExpr
-createChain first@(Agent fname fintf) second@(Agent sname sintf) last@(Agent lname lintf) =
-  if fname == sname && fname == lname
-    then if hasSameSites fintf sintf && hasSameSites fintf lintf
-           then if firstLink == firstLink'
-                  then chain
-                  else error $ "createChain: first and second agents in chain must be bound by sites '" ++ rightSite ++ "' and '" ++ leftSite ++ "', respectively"
-           else error "createChain: all agents in a chain must have the same sites in their interface"
-    else error "createChain: all agents in a chain must be of the same type"
-
+createChain first@(Agent fname fintf) second@(Agent sname sintf) last@(Agent lname lintf)
+  | not (fname == sname && fname == lname) =
+      error $ "KappaParser.createChain: all agents in a chain must be of the same type"
+  | not (hasSameSites fintf sintf && hasSameSites fintf lintf) =
+      error $ "KappaParser.createChain: all agents in a chain must have the same sites in their interface"
+  | firstLink /= firstLink' =
+      error $ "KappaParser.createChain: first and second agents in chain must be bound by sites '" ++ rightSite ++ "' and '" ++ leftSite ++ "', respectively"
+  | otherwise = first : take n agentsInChain ++ [last]
   where
-    chain = first : take n agentsInChain ++ [last]
     agentsInChain = iterate nextAgentInChain second
     n = (lastLink - firstLink) `quot` step
 
@@ -136,21 +134,17 @@ createChain first@(Agent fname fintf) second@(Agent sname sintf) last@(Agent lna
     hasSameSites :: Interface -> Interface -> Bool
     hasSameSites i1 i2 = map siteName i1 == map siteName i2
 
-chainExpr :: Parser KExpr
-chainExpr = do first <- agent
-               m_comma
-               second <- agent
-               m_comma
-               m_reserved "..."
-               m_comma
-               last <- agent
-               return $ createChain first second last
-
 kexpr :: Parser KExpr
-kexpr = do xs <- m_commaSep1 (try chainExpr <|> singleAgentExpr) <?> "kappa expression"
-           return $ concat xs
-  where singleAgentExpr = do a <- agent
-                             return [a]
+kexpr = reverse . unpackChains [] [] <$> m_commaSep1 (liftM Right agent <|> liftM Left ellipsis) <?> "kappa expression"
+  where
+    ellipsis = m_reserved "..."
+
+    unpackChains :: KExpr -> KExpr -> [Either () Agent] -> KExpr
+    unpackChains acc [b2,b1] [] = b1:b2:acc
+    unpackChains acc [b2,b1] ((Right a):xs) = unpackChains (b1:acc) [a,b2]  xs
+    unpackChains acc buf     ((Right a):xs) = unpackChains     acc  (a:buf) xs
+    unpackChains acc [b2,b1] ((Left _):(Right a):xs) = unpackChains (reverse (createChain b1 b2 a) ++ acc) [] xs
+    unpackChains _ _ _ = error "malformed chain expression"
 
 rule :: Parser Rule
 rule = do lhs <- kexpr
