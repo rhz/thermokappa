@@ -75,8 +75,8 @@ detailedDot env m1 m2 (m3, (m1AgentMap, m2AgentMap)) =
                 linkDot ((aId1, sId1), (aId2, sId2)) =
                   "    " ++ (nodes Vec.!? aId1 ? "Matching.detailedDot: " ++ show aId1 ++ ", " ++ show nodes ++ ", " ++ show (M.toKappa env mix)) ++
                   " -> " ++ (nodes Vec.!? aId2 ? "Matching.detailedDot: " ++ show aId2 ++ ", " ++ show nodes ++ ", " ++ show (M.toKappa env mix)) ++
-                  " [ headlabel = \"" ++ siteName aId1 sId1 mix ++ "\"" ++
-                  " , taillabel = \"" ++ siteName aId2 sId2 mix ++ "\", arrowhead = \"none\" ];\n"
+                  " [ taillabel = \"" ++ siteName aId1 sId1 mix ++ "\"" ++
+                  " , headlabel = \"" ++ siteName aId2 sId2 mix ++ "\", arrowhead = \"none\" ];\n"
 
         agentName agent = E.agentOfId env (M.agentName agent) ? "Matching.detailedDot: missing agent name id"
         siteName aId sId mix = E.siteOfId env (M.agentName (M.agents mix Vec.! aId), sId) ? "Matching.detailedDot: missing site id"

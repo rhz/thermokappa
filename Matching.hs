@@ -56,66 +56,65 @@ superpose e1 e2 = fst <$> foldM match ([], M.agentsWithId e2) (M.agentsWithId e1
 -- Note that unify a1 a2 == unify a2 a1 (up to site reordering within a multisite)
 unify :: M.Agent -> M.Agent -> Maybe M.Agent
 unify a1 a2 = do guard $ M.agentName a1 == M.agentName a2
-                 unifiedIntf <- Vec.foldM siteUnify Vec.empty (Vec.indexed sites)
-                 return $ M.Agent{ M.agentName = M.agentName a1
-                                 , M.interface = unifiedIntf
-                                 }
+                 unifiedIntf <- Vec.foldM siteUnify' [] sites
+                 return $ a1{ M.interface = Vec.fromList $ reverse unifiedIntf }
   where
     sites = Vec.zip (M.interface a1) (M.interface a2)
 
-    siteUnify :: M.Interface -> (M.SiteId, (M.Site, M.Site)) -> Maybe M.Interface
-    siteUnify unifiedIntf (sId, (s1, s2)) =
-      do unifiedInt <- M.internalState s1 `intUnify` M.internalState s2
-         unifiedLnk <- M.bindingState  s1 `lnkUnify` M.bindingState  s2
-         let unifiedSite = M.Site{ M.internalState = unifiedInt
-                                 , M.bindingState  = unifiedLnk
-                                 }
-         return $ Vec.snoc unifiedIntf unifiedSite
+    siteUnify' unifiedIntf (s1, s2) = do unifiedSite <- siteUnify s1 s2
+                                         return (unifiedSite : unifiedIntf)
 
-      where -- More specific sites win
-        intUnify :: Maybe M.InternalStateId -> Maybe M.InternalStateId -> Maybe (Maybe M.InternalStateId)
-        intUnify Nothing Nothing = Just Nothing
-        intUnify (Just int1) (Just int2) | int1 == int2  = Just $ Just int1
-                                         | otherwise     = Nothing
-        intUnify Nothing (Just int2) = Just $ Just int2
-        intUnify (Just int1) Nothing = Just $ Just int1
+siteUnify :: M.Site -> M.Site -> Maybe M.Site
+siteUnify s1 s2 =
+  do unifiedInt <- M.internalState s1 `intUnify` M.internalState s2
+     unifiedLnk <- M.bindingState  s1 `lnkUnify` M.bindingState  s2
+     return M.Site{ M.internalState = unifiedInt
+                  , M.bindingState  = unifiedLnk
+                  }
+  where -- More specific sites win
+    intUnify :: Maybe M.InternalStateId -> Maybe M.InternalStateId -> Maybe (Maybe M.InternalStateId)
+    intUnify (Just int1) (Just int2) | int1 == int2  = Just (Just int1)
+                                     | otherwise     = Nothing
+    intUnify Nothing Nothing = Just Nothing
+    intUnify Nothing int2 = Just int2
+    intUnify int1 Nothing = Just int1
 
-        lnkUnify :: M.BindingState -> M.BindingState -> Maybe M.BindingState
-        lnkUnify M.Free M.Free = Just M.Free
-        lnkUnify M.Bound M.Bound = Just M.Bound
-        lnkUnify M.SemiLink M.SemiLink = Just M.SemiLink
+    lnkUnify :: M.BindingState -> M.BindingState -> Maybe M.BindingState
+    lnkUnify M.Free M.Free = Just M.Free
+    lnkUnify M.Bound M.Bound = Just M.Bound
+    lnkUnify M.SemiLink M.SemiLink = Just M.SemiLink
 
-        lnkUnify M.SemiLink M.Bound = Just M.Bound
-        lnkUnify M.Bound M.SemiLink = Just M.Bound
+    lnkUnify M.SemiLink M.Bound = Just M.Bound
+    lnkUnify M.Bound M.SemiLink = Just M.Bound
 
-        lnkUnify lnk1 M.Unspecified = Just lnk1
-        lnkUnify M.Unspecified lnk2 = Just lnk2
+    lnkUnify lnk1 M.Unspecified = Just lnk1
+    lnkUnify M.Unspecified lnk2 = Just lnk2
 
-        lnkUnify _ _ = Nothing
+    lnkUnify _ _ = Nothing
 
 
--- unify was not the solution either, but it's perhaps useful for other things (the obviously non-useful part has been deleted)
--- maybe for computing the influence map, let's see then
--- what we need now is a function that takes the intersection of two agents (that is, the opossite of unify
--- in the sense that it keeps the less specific sites)
+-- unify was not the solution either, but it's perhaps useful for other things
+-- maybe for computing the influence map
+-- what we need now is a function that takes the intersection of two agents
+-- (that is, the opossite of unify in the sense that it keeps the less specific sites)
 
 -- Intersect
 intersect :: M.Agent -> M.Agent -> [M.Agent]
 intersect a1 a2 =
   do guard $ M.agentName a1 == M.agentName a2
-     intf3 <- Vec.foldM siteIntersect Vec.empty (Vec.indexed sites)
-     return a1{ M.interface = intf3 }
+     intf3 <- Vec.foldM siteIntersect [] (Vec.indexed sites)
+     return a1{ M.interface = Vec.fromList $ reverse intf3 }
   where
     sites = Vec.zip (M.interface a1) (M.interface a2)
 
-    siteIntersect :: M.Interface -> (M.SiteId, (M.Site, M.Site)) -> [M.Interface]
+    siteIntersect :: [M.Site] -> (M.SiteId, (M.Site, M.Site)) -> [[M.Site]]
     siteIntersect intf (sId, (s1, s2)) =
       do int <- M.internalState s1 `intIntersect` M.internalState s2
          lnk <- M.bindingState  s1 `lnkIntersect` M.bindingState  s2
          let s3 = M.Site{ M.internalState = int
                         , M.bindingState  = lnk
                         }
-         return $ Vec.snoc intf s3
+         return (s3 : intf)
 
     -- Less specific sites win
     intIntersect :: Maybe M.InternalStateId -> Maybe M.InternalStateId -> [Maybe M.InternalStateId]
@@ -139,131 +138,215 @@ intersect a1 a2 =
     lnkIntersect _ _ = []
 
 
-type PendingLink = (M.Endpoint, M.SiteId)
+type PendingLinks = Map.Map M.SiteId M.Endpoint
+type TodoMap = Map.Map (M.AgentId, M.AgentId) PendingLinks
 
 -- Returns all possible pull-backs for the two mixtures
 -- TODO how could I avoid using nub? why are there so many replicates? (ie, why are there so many ways to create the same intersection?)
+--      is it because isomorphisms? if so, why are them all created in a syntacticly equivalent manner?
 intersections :: M.Mixture -> M.Mixture -> [(M.Mixture, (Matching, Matching))]
-intersections m1 m2 = nub $ do (m3, m1Matching, m2Matching, _, _) <- pullbacks [(M.empty, [], [], ids1, ids2)]
+intersections m1 m2 = nub $ do (agents, graph, m1Matching, m2Matching, _, _, _) <- pullbacks [([], Map.empty, [], [], 0, ids1, ids2)]
+                               let m3 = M.Mixture { M.agents = Vec.fromList $ reverse agents
+                                                  , M.graph  = graph
+                                                  }
                                return (m3, (m1Matching, m2Matching))
   where
     ids1 = Set.fromList $ M.agentIds m1
     ids2 = Set.fromList $ M.agentIds m2
 
-    isFinished :: (M.Mixture, Matching, Matching, Set.Set M.AgentId, Set.Set M.AgentId) -> Bool
-    isFinished (_, _, _, ids1, ids2) = Set.null ids1 || Set.null ids2
+    isFinished :: ([M.Agent], M.Graph, Matching, Matching, M.AgentId, Set.Set M.AgentId, Set.Set M.AgentId) -> Bool
+    isFinished (_, _, _, _, _, ids1, ids2) = Set.null ids1 || Set.null ids2
 
-    pullbacks :: [(M.Mixture, Matching, Matching, Set.Set M.AgentId, Set.Set M.AgentId)] -> [(M.Mixture, Matching, Matching, Set.Set M.AgentId, Set.Set M.AgentId)]
+    pullbacks :: [([M.Agent], M.Graph, Matching, Matching, M.AgentId, Set.Set M.AgentId, Set.Set M.AgentId)]
+              -> [([M.Agent], M.Graph, Matching, Matching, M.AgentId, Set.Set M.AgentId, Set.Set M.AgentId)]
     pullbacks intersections
       | null partialIntersections = completedIntersections
       | otherwise = completedIntersections ++ extendedIntersections
       where
         (completedIntersections, partialIntersections) = partition isFinished intersections
         extendedIntersections = pullbacks $
-          do (mix, m1Matching, m2Matching, ids1, ids2) <- partialIntersections
+          do (agents, graph, m1Matching, m2Matching, id3, ids1, ids2) <- partialIntersections
              id2 <- Set.toList ids2
-             let id1 = Set.findMin ids1
-             (mix, m1Matching, m2Matching, Set.delete id1 ids1, ids2) : intersectAndExtend mix [((id1, id2), [])] ids1 ids2 m1Matching m2Matching
+             let (id1, ids1') = Set.deleteFindMin ids1
+                 intersections' = intersectAndExtend agents graph m1Matching m2Matching id1 id2 id3 ids1 ids2 Map.empty Map.empty
+             (agents, graph, m1Matching, m2Matching, id3, ids1', ids2) : intersections'
 
-    intersectAndExtend :: M.Mixture -> [((M.AgentId, M.AgentId), [PendingLink])] -> Set.Set M.AgentId -> Set.Set M.AgentId -> Matching -> Matching -> [(M.Mixture, Matching, Matching, Set.Set M.AgentId, Set.Set M.AgentId)]
-    intersectAndExtend mix [] ids1 ids2 m1Matching m2Matching = return (mix, m1Matching, m2Matching, ids1, ids2)
-    intersectAndExtend mix (((id1, id2), pendingLinks):todo) ids1 ids2 m1Matching m2Matching
+    intersectAndExtend :: [M.Agent] -> M.Graph -> Matching -> Matching -> M.AgentId -> M.AgentId -> M.AgentId -> Set.Set M.AgentId -> Set.Set M.AgentId
+                       -> PendingLinks -> TodoMap
+                       -> [([M.Agent], M.Graph, Matching, Matching, M.AgentId, Set.Set M.AgentId, Set.Set M.AgentId)]
+    intersectAndExtend agents graph m1Matching m2Matching id1 id2 id3 ids1 ids2 pendingLinks todo
       | Set.member id1 ids1 && Set.member id2 ids2 =
         do a3 <- intersect a1 a2
            -- for every bound site in a3, intersect and extend the neighbours
-           let nbs = do (sId, M.Site{ M.bindingState = M.Bound }) <- indexedList $ M.interface a3
-                        let (nb1, nbSiteId1) = M.follow m1 (id1, sId) ? "Matching.intersections.intersectAndExtend: disconnected graph (1)"
-                            (nb2, nbSiteId2) = M.follow m2 (id2, sId) ? "Matching.intersections.intersectAndExtend: disconnected graph (2)"
-                            -- a pending link holds all the information that's needed to create the link
-                            -- with a neighbour until the agent id of the neighbour in m3 is known
-                            pendingLink = ((id3, sId), nbSiteId1)
+           let nbs = do (sId, M.Site{ M.bindingState = M.Bound }) <- M.sitesWithId a3
+                        -- skip the sites you are coming from
+                        guard $ sId `Map.notMember` pendingLinks
+                        let nb1 = M.follow m1 (id1, sId) ? "Matching.intersections.intersectAndExtend: disconnected graph (1)"
+                            nb2 = M.follow m2 (id2, sId) ? "Matching.intersections.intersectAndExtend: disconnected graph (2)"
+                        return (sId, nb1, nb2)
 
-                        if nbSiteId1 /= nbSiteId2
-                          then error "Matching.intersections.intersectAndExtend: site ids in neighbour differ"
-                          else return ((nb1, nb2), pendingLink)
+               nonExtendibleSites = [ sId | (sId, (_, i), (_, j)) <- nbs, i /= j ]
 
-               nbs' = map (fst . head |.| map snd) $ groupWith fst nbs -- group by neighbour
-               mix' = M.Mixture{ M.agents = Vec.snoc (M.agents mix) a3
-                               , M.graph = foldr insertLink (M.graph mix) pendingLinks
-                               }
+               -- a pending link holds all the information that's needed to create the link
+               -- with a neighbour until the agent id of the neighbour in m3 is known
+               nbs'  = [ ((a, b), (i, (id3, sId))) | (sId, (a, i), (b, j)) <- nbs, i == j ] -- pending link: ((id3, sId), i)
+               nbs'' = fst . head |.| Map.fromList . map snd <$> groupWith fst nbs' -- group pending links by neighbour
+               todo' = Map.unionWith (Map.union) todo (Map.fromList nbs'')
 
-           intersectAndExtend mix' (todo ++ nbs') (Set.delete id1 ids1) (Set.delete id2 ids2) m1Matching' m2Matching'
+               --agents' = foldl' (M.setLnk M.SemiLink) a3 semiLinks : agents
+               agents' = a3 : agents
+               graph'  = Map.foldrWithKey insertLink graph pendingLinks
 
-      | Set.member id1 ids1 || Set.member id2 ids2 = [] -- TODO this is a little bit hacky... I should skip (id1, id2) beforehand to prevent the otherwise case and this should be the otherwise
-      | otherwise = intersectAndExtend mix todo ids1 ids2 m1Matching m2Matching -- skip (id1, id2) -- this happens when coming back through a link
+               ids1' = Set.delete id1 ids1
+               ids2' = Set.delete id2 ids2
 
-      where a1 = M.agents m1 Vec.! id1
-            a2 = M.agents m2 Vec.! id2
-            id3 = Vec.length (M.agents mix)
+           if null nonExtendibleSites
+             then if Map.null todo'
+                    then return (agents', graph', m1Matching', m2Matching', id3+1, ids1', ids2') -- there's nothing else to do, we are done
+                    else let (((id1', id2'), pendingLinks'), todo'') = Map.deleteFindMin todo' in -- pick the next one and continue exteding
+                         intersectAndExtend agents' graph' m1Matching' m2Matching' id1' id2' (id3+1) ids1' ids2' pendingLinks' todo''
+             else [] -- there are sites that make m3 impossible to extend completely
 
-            m1Matching' = (id1, id3) : m1Matching
-            m2Matching' = (id2, id3) : m2Matching
+      | otherwise = []
+      where
+        a1 = M.agents m1 Vec.! id1
+        a2 = M.agents m2 Vec.! id2
 
-            insertLink :: PendingLink -> M.Graph -> M.Graph
-            insertLink (ep, sId) = M.addLink ep (id3, sId)
+        m1Matching' = (id1, id3) : m1Matching
+        m2Matching' = (id2, id3) : m2Matching
+
+        insertLink :: M.SiteId -> M.Endpoint -> M.Graph -> M.Graph
+        insertLink sId ep = M.addLink ep (id3, sId)
 
 
 type AgentMap = Map.Map M.AgentId M.AgentId
+--data LinkInfo = T1 | T2 | T12 | None
+data LinkInfo = T1 | T2 | None
 
--- TODO this should be :: E.Env -> [M.Mixture] -> [(M.Mixture, [AgentMap])]
+-- TODO this should be :: [M.Mixture] -> [(M.Mixture, [AgentMap])]
 minimalGlueings :: M.Mixture -> M.Mixture -> [(M.Mixture, (AgentMap, AgentMap))]
 minimalGlueings m1 m2 =
-  do (m3, (m1Matchings, m2Matchings)) <- intersections m1 m2
-     let (m3' , m1AgentMap) = extend m1 m1Matchings m3
-         (m3'', m2AgentMap) = extend m2 m2Matchings m3'
-     return (m3'', (m1AgentMap, m2AgentMap))
+  do (m3 , (m1Matchings, m2Matchings)) <- intersections m1 m2
+     (m3', (m1AgentMap , m2AgentMap )) <- refine m3 m1Matchings m2Matchings
+     let (m3'' , m1AgentMap') = addAndExtend m1 (m3' , m1AgentMap)
+         (m3''', m2AgentMap') = addAndExtend m2 (m3'', m2AgentMap)
+     return (m3''', (m1AgentMap', m2AgentMap'))
   where
-    extend :: M.Mixture -> Matching -> M.Mixture -> (M.Mixture, AgentMap)
-    extend m1 matchings m3 = addSites missingSites (m3, agentMap)
+    refine :: M.Mixture -> Matching -> Matching -> [(M.Mixture, (AgentMap, AgentMap))]
+    refine m3 m1Matchings m2Matchings = foldM refineAgent (m3, (m1AgentMap, m2AgentMap)) (M.agentIds m3)
       where
-        agentMap = Map.fromList matchings
+        m1AgentMap = Map.fromList m1Matchings
+        m2AgentMap = Map.fromList m2Matchings
+        bwdMap = Map.fromList [ (id3, (id1, id2)) | [(id1, id3), (id2, _)] <- groupWith snd (m1Matchings ++ m2Matchings) ]
 
-        -- Find the sites missing in the agents that have been intersected
-        missingSites = do (aId1, aId3) <- matchings
-                          (sId, M.Site{ M.internalState = Nothing, M.bindingState = M.Unspecified }) <- indexedList $ M.interface (M.agents m3 Vec.! aId3)
-                          guard . M.isBound $ M.interface (M.agents m1 Vec.! aId1) Vec.! sId
-                          return ((aId1, sId), aId3)
-
-        addSites :: [(M.Endpoint, M.AgentId)] -> (M.Mixture, AgentMap) -> (M.Mixture, AgentMap)
-        addSites [] (m3, agentMap)
-          | null remainingAgents  =  (m3, agentMap)
-          | otherwise             =  addSites newSites (m3', agentMap)
+        refineAgent :: (M.Mixture, (AgentMap, AgentMap)) -> M.AgentId -> [(M.Mixture, (AgentMap, AgentMap))]
+        refineAgent mg id3 = foldM refineSite' mg (M.siteIds a1) -- note that M.siteIds a1 == M.siteIds a2 == M.siteIds a3
           where
-            remainingAgents = M.agentIds m1 \\ Map.keys agentMap
+            (id1, id2) = bwdMap Map.! id3
+            a1 = M.agents m1 Vec.! id1
+            a2 = M.agents m2 Vec.! id2
 
-            aId1 = head remainingAgents
-            aId3 = Vec.length (M.agents m3)
+            refineSite' :: (M.Mixture, (AgentMap, AgentMap)) -> M.SiteId -> [(M.Mixture, (AgentMap, AgentMap))]
+            refineSite' (m3, (m1AgentMap, m2AgentMap)) sId =
+              do s3' <- toList $ siteUnify s1 s2
+                 let a3' = a3{ M.interface = M.interface a3 Vec.// [(sId, s3')] }
+                     m3' = m3{ M.agents    = M.agents    m3 Vec.// [(id3, a3')] }
+                 case linkInfo s1 s2 s3 of
+                   T1   -> let (m3'', m1AgentMap') = extend m1 [(id1, id3, sId)] (m3', m1AgentMap)
+                           in return (m3'', (m1AgentMap', m2AgentMap))
+                   T2   -> let (m3'', m2AgentMap') = extend m2 [(id2, id3, sId)] (m3', m2AgentMap)
+                           in return (m3'', (m1AgentMap, m2AgentMap'))
+                   --T12  -> [] -- TODO is this the best way to handle the semilink creation when two sites are bound to different ends? probably I should not create the semilink in the first place
+                   None -> return (m3', (m1AgentMap, m2AgentMap))
+              where
+                a3 = M.agents m3 Vec.! id3
+                s1 = M.interface a1 Vec.! sId
+                s2 = M.interface a2 Vec.! sId
+                s3 = M.interface a3 Vec.! sId
 
-            a1 = M.agents m1 Vec.! aId1
-            m3' = m3{ M.agents = Vec.snoc (M.agents m3) a1 }
-            newSites = do (sId, M.Site{ M.bindingState = M.Bound }) <- indexedList $ M.interface a1
-                          return ((aId1, sId), aId3)
+                toList Nothing = []
+                toList (Just x) = [x]
 
-        addSites (((aId1, sId), aId3):missingSites) (m3, agentMap)
-          | nbId1 `Map.member` agentMap  =  addSites  missingSites              (m3' , agentMap') -- link
-          | otherwise                    =  addSites (missingSites ++ newSites) (m3'', agentMap') -- append agent and link
-          where
-            (nbId1, nbSiteId) = M.follow m1 (aId1, sId) ? "Matching.minimalGlueing.extend: missing link"
+    addAndExtend :: M.Mixture -> (M.Mixture, AgentMap) -> (M.Mixture, AgentMap)
+    addAndExtend m1 (m3, agentMap)
+      | null remainingAgents  =  (m3, agentMap)
+      | otherwise             =  extend m1 sites (m3', agentMap')
+      where
+        remainingAgents = M.agentIds m1 \\ Map.keys agentMap
+        id1 = head remainingAgents
+        id3 = Vec.length (M.agents m3)
+        a1  = M.agents m1 Vec.! id1
+        m3' = m3{ M.agents = Vec.snoc (M.agents m3) a1 } -- TODO beware!! Vec.snoc here!! possible memory leak!!
+        agentMap' = Map.insert id1 id3 agentMap
 
-            agent  = M.agents m3 Vec.! aId3
-            agent' = agent{ M.interface = M.interface agent Vec.// [(sId, site')] }
-            agents' = M.agents m3 Vec.// [(aId3, agent')]
+        sites = do (sId, M.Site{ M.bindingState = M.Bound }) <- M.sitesWithId a1
+                   return (id1, id3, sId)
 
-            site  = M.interface agent Vec.! sId
-            site' = site{ M.bindingState = M.Bound }
+extend :: M.Mixture -> [(M.AgentId, M.AgentId, M.SiteId)] -> (M.Mixture, AgentMap) -> (M.Mixture, AgentMap)
+extend m1 [] (m3, agentMap) = (m3, agentMap)
+extend m1 ((id1, id3, sId):sites) (m3, agentMap)
+  | nbId1 `Map.member` agentMap = extend m1  sites            (M.bind (id3, sId) (nbId3, nbSiteId) m3 , agentMap )
+  | otherwise                   = extend m1 (sites ++ sites') (M.bind (id3, sId) (nbId3, nbSiteId) m3', agentMap')
+  where
+    (nbId1, nbSiteId) = M.follow m1 (id1, sId) ? "Matching.extend: missing link"
+    nbId3  = Map.findWithDefault nbId3' nbId1 agentMap
+    nbId3' = Vec.length (M.agents m3)
 
-            nbId3 = Map.findWithDefault (Vec.length agents') nbId1 agentMap
-            graph' = M.addLink (aId3, sId) (nbId3, nbSiteId) (M.graph m3) -- add link
-            m3' = m3{ M.agents = agents', M.graph  = graph' }
+    -- add neighbour
+    nb1 = M.agents m1 Vec.! nbId1
+    m3' = m3{ M.agents = Vec.snoc (M.agents m3) nb1 }
+    agentMap' = Map.insert nbId1 nbId3 agentMap
 
-            -- Add neighbour
-            nb1 = M.agents m1 Vec.! nbId1
-            m3'' = m3'{ M.agents = Vec.snoc agents' nb1 }
+    -- collect new sites from nb1
+    sites' = do (nbSiteId', M.Site{ M.bindingState = M.Bound }) <- M.sitesWithId nb1
+                guard $ nbSiteId /= nbSiteId'
+                return (nbId1, nbId3, nbSiteId')
 
-            agentMap' = Map.insert aId1 aId3 $ Map.insert nbId1 nbId3 agentMap
+linkInfo :: M.Site -> M.Site -> M.Site -> LinkInfo
+linkInfo s1 s2 s3
+  | M.isBound s1 && not (M.isBound s2) && not (M.isBound s3) = T1
+  | not (M.isBound s1) && M.isBound s2 && not (M.isBound s3) = T2
+--  | M.isBound s1       && M.isBound s2 && not (M.isBound s3) = T12
+  | otherwise                                                = None
 
-            -- Collect new sites from nb1
-            newSites = do (nbSiteId', M.Site{ M.bindingState = M.Bound }) <- indexedList $ M.interface nb1
-                          guard $ nbSiteId' /= nbSiteId
-                          return ((nbId1, nbSiteId'), nbId3)
+
+{-
+  where
+    extend :: M.Mixture -> Matching -> Matching -> [(M.Mixture, (AgentMap, AgentMap))]
+    extend m3 m1Matchings m2Matchings = extend' m3 m1AgentMap m2AgentMap sitesInM3
+      where
+        m1AgentMap = Map.fromList m1Matchings
+        m2AgentMap = Map.fromList m2Matchings
+        bwdMap = Map.fromList [ (id3, (id1, id2)) | [((id1, id3), (id2, _))] <- groupWith snd (m1Matchings ++ m2Matchings) ]
+
+        sitesInM3 = do (id3, a3) <- M.agentsWithId m3
+                       let (id1, id2) = bwdMap Map.! id3
+                           a1 = m1 Vec.! id1
+                           a2 = m2 Vec.! id2
+                       (sId, s3) <- M.sitesWithId a3
+                       let s1 = M.interface a1 Vec.! sId
+                           s2 = M.interface a2 Vec.! sId
+                       (s3', linkInfo) <- refineSite s1 s2 s3 -- this should be a Maybe
+                       return (id3, (sId, (s3', linkInfo)))
+
+        --extend' :: [(M.AgentId, (M.SiteId, (M.Site, LinkInfo)))] -> [(M.Mixture, (AgentMap, AgentMap))]
+        refineAndExtend m3 m1AgentMap m2AgentMap [] = ...
+        refineAndExtend m3 m1AgentMap m2AgentMap sitesInM3 = foldr extendSite
+          where m3' = m3{ M.agents = M.agents m3 Vec.// refinedAgents }
+
+                refinedAgents = do (id3, sitesInA3) <- fst . head |.| map snd <$> groupWith fst sitesInM3
+                                   return (id3, refineAgent (M.agents m3 Vec.! id3) sitesInA3)
+
+                --refineAgent :: M.Agent -> [(M.SiteId, (M.Site, LinkInfo))]) -> M.Agent
+                refineAgent a3 sitesInA3 = a3{ M.interface = M.interface a3 Vec.// sites' }
+                  where sites' = [ (sId, s3) | (sId, (s3, _)) <- sitesInA3 ]
+
+                nbs = do (id3, (sId, (_, Just (nb1, m1)))) <- sitesInM3
+                         return  ((id3, sId), (nb1, m1))
+
+                -- get neighbours and check if they are in agent maps
+                -- if they are not, add them to m3
+                -- link them
+                -- perhaps in some intermediate state I should remove duplicate links, e.g. when two sites in sitesInM3 must be linked
+-}
 
