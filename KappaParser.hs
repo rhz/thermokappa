@@ -7,7 +7,8 @@ module KappaParser( SiteName, InternalState, BondLabel, BindingState(..), Site(.
                   , AExpr(..), Unop(..), Duop(..)
                   , Obs(..), Shape, ShapeName, Init, Expr, Var, VarName, Module(..), emptyModule
                   , agent, kexpr, rule, aexpr, moduleParser
-                  , simpleParse, parseAgent, parseKExpr, parseRule, parseModule, parseFromFile, parseKExprsFromFile
+                  , fileParse, simpleParse, parseAgent, parseKExpr, parseRule, parseModule, parseFromFile
+                  , kappaDef, parens, decimal, naturalOrFloat, comma, commaSep, commaSep1, semiSep1, symbol, reservedOp, reserved, identifier, whiteSpace
                   ) where
 
 import Prelude hiding (init)
@@ -17,7 +18,7 @@ import Data.List (delete)
 
 import Text.Parsec
 import Text.Parsec.Expr
-import Text.Parsec.Token
+import qualified Text.Parsec.Token as T
 import Text.Parsec.Language
 import Text.Parsec.Error
 import Text.Parsec.Indent
@@ -52,52 +53,52 @@ data Rule = Rule Bool KExpr KExpr Rate
   deriving (Show, Eq)
 
 -- Language definition
-def = emptyDef{ commentStart = "{-"
-              , commentEnd = "-}"
-              , commentLine = "--"
-              , nestedComments = True
-              , identStart = letter
-              , identLetter = alphaNum <|> oneOf "_'"
-              , opStart = oneOf "=<-@+*/^"
-              , opLetter = oneOf "=<->@+*/^"
-              , reservedOpNames = ["=", "->", "<->", "@", "+", "-", "*", "/", "^"]
-              , reservedNames = ["contact-map:", "init:", "obs:", "shape:", "shapes:", "rule:", "rules:", "...",
-                                 "log", "exp", "mod", "sqrt", "sin", "cos", "tan", "int", "inf"]
-              }
+kappaDef = emptyDef{ T.commentStart = "{-"
+                   , T.commentEnd = "-}"
+                   , T.commentLine = "--"
+                   , T.nestedComments = True
+                   , T.identStart = letter
+                   , T.identLetter = alphaNum <|> oneOf "_'"
+                   , T.opStart = oneOf "=<-@+*/^"
+                   , T.opLetter = oneOf "=<->@+*/^"
+                   , T.reservedOpNames = ["=", "->", "<->", "@", "+", "-", "*", "/", "^"]
+                   , T.reservedNames = ["contact-map:", "init:", "obs:", "shape:", "shapes:", "rule:", "rules:", "...",
+                                        "log", "exp", "mod", "sqrt", "sin", "cos", "tan", "int", "inf"]
+                   }
 
-TokenParser{ parens = m_parens
-           , decimal = m_decimal
-           , naturalOrFloat = m_naturalOrFloat
-           , comma = m_comma
-           , commaSep = m_commaSep
-           , commaSep1 = m_commaSep1
-           , semiSep1 = m_semiSep1 -- only used for parseKExprsFromFile
-           , symbol = m_symbol
-           , reservedOp = m_reservedOp
-           , reserved = m_reserved
-           , identifier = m_identifier
-           , whiteSpace = m_whiteSpace } = makeTokenParser def
+T.TokenParser{ T.parens = parens
+             , T.decimal = decimal
+             , T.naturalOrFloat = naturalOrFloat
+             , T.comma = comma
+             , T.commaSep = commaSep
+             , T.commaSep1 = commaSep1
+             , T.semiSep1 = semiSep1
+             , T.symbol = symbol
+             , T.reservedOp = reservedOp
+             , T.reserved = reserved
+             , T.identifier = identifier
+             , T.whiteSpace = whiteSpace } = T.makeTokenParser kappaDef
 
 
 -- Kappa parsers
 agent :: Parser Agent
-agent = do name <- m_identifier <?> "agent"
-           intf <- m_parens interface <?> "interface"
+agent = do name <- identifier <?> "agent"
+           intf <- parens interface <?> "interface"
            return $ Agent name intf
 
 interface :: Parser Interface
-interface = m_commaSep site
+interface = commaSep site
 
 site :: Parser Site
-site = do siteName <- m_identifier <?> "site name"
-          internalState <- (m_symbol "~" >> m_identifier) <|> return ""
-          bindingState  <- (m_symbol "!" >> (bondLabel <|> semiLink))
-                       <|> (m_symbol "?" >> return Unspecified)
+site = do siteName <- identifier <?> "site name"
+          internalState <- (symbol "~" >> identifier) <|> return ""
+          bindingState  <- (symbol "!" >> (bondLabel <|> semiLink))
+                       <|> (symbol "?" >> return Unspecified)
                        <|> return Free
           return $! Site siteName internalState bindingState
-  where bondLabel = do bondLabel <- m_decimal <?> "bond label"
+  where bondLabel = do bondLabel <- decimal <?> "bond label"
                        return $ Bound (fromIntegral bondLabel)
-        semiLink  = m_symbol "_" >> return SemiLink
+        semiLink  = symbol "_" >> return SemiLink
 
 createChain :: Agent -> Agent -> Agent -> KExpr
 createChain first@(Agent fname fintf) second@(Agent sname sintf) last@(Agent lname lintf)
@@ -135,9 +136,9 @@ createChain first@(Agent fname fintf) second@(Agent sname sintf) last@(Agent lna
     hasSameSites i1 i2 = map siteName i1 == map siteName i2
 
 kexpr :: Parser KExpr
-kexpr = reverse . unpackChains [] [] <$> m_commaSep1 (liftM Right agent <|> liftM Left ellipsis) <?> "kappa expression"
+kexpr = reverse . unpackChains [] [] <$> commaSep1 (liftM Right agent <|> liftM Left ellipsis) <?> "kappa expression"
   where
-    ellipsis = m_reserved "..."
+    ellipsis = reserved "..."
 
     unpackChains :: KExpr -> KExpr -> [Either () Agent] -> KExpr
     unpackChains acc [b2,b1] [] = b1:b2:acc
@@ -148,10 +149,10 @@ kexpr = reverse . unpackChains [] [] <$> m_commaSep1 (liftM Right agent <|> lift
 
 rule :: Parser Rule
 rule = do lhs <- kexpr
-          isReversible <- ((m_reservedOp "->" <?> "arrow") >> return False) <|>
-                          ((m_reservedOp "<->" <?> "bidirectional arrow") >> return True)
+          isReversible <- ((reservedOp "->" <?> "arrow") >> return False) <|>
+                          ((reservedOp "<->" <?> "bidirectional arrow") >> return True)
           rhs <- kexpr
-          m_reservedOp "@"
+          reservedOp "@"
           rate <- aexpr
           return $ Rule isReversible lhs rhs rate
 
@@ -186,32 +187,32 @@ cmBindingStates (CMSite _ _ bss) = bss
 
 -- CM parsers
 cmAgent :: Parser CMAgent
-cmAgent = do name <- m_identifier <?> "agent signature"
-             intf <- m_parens cmIntf <?> "signature interface"
+cmAgent = do name <- identifier <?> "agent signature"
+             intf <- parens cmIntf <?> "signature interface"
              return $ CMAgent name intf
 
 cmIntf :: Parser CMIntf
-cmIntf = m_commaSep cmSite
+cmIntf = commaSep cmSite
 
 states :: Parser a -> String -> Parser [a]
-states stateParser s = (m_symbol s >> stateSet) <|> return []
-  where stateSet = do m_symbol "{"
-                      xs <- m_commaSep1 stateParser
-                      m_symbol "}"
+states stateParser s = (symbol s >> stateSet) <|> return []
+  where stateSet = do symbol "{"
+                      xs <- commaSep1 stateParser
+                      symbol "}"
                       return xs
                    <|>
                    do x <- stateParser
                       return [x]
 
 cmBindingState :: Parser CMBindingState
-cmBindingState = do agentName <- m_identifier
+cmBindingState = do agentName <- identifier
                     char '.'
-                    siteName <- m_identifier
+                    siteName <- identifier
                     return $ CMBound agentName siteName
 
 cmSite :: Parser CMSite
-cmSite = do siteName <- m_identifier <?> "site name"
-            internalStates <- states m_identifier "~"
+cmSite = do siteName <- identifier <?> "site name"
+            internalStates <- states identifier "~"
             bindingStates <- states cmBindingState "!"
             return $ CMSite siteName internalStates bindingStates
 
@@ -227,31 +228,31 @@ data Duop = Add | Sub | Mult | Div | Mod | Pow
 aexpr :: Parser AExpr
 aexpr = buildExpressionParser table term <?> "algebraic expression"
 
-table = [ [Prefix (m_reserved "log" >> return (Uno Log)),
-           Prefix (m_reserved "exp" >> return (Uno Exp)),
-           Prefix (m_reserved "sin" >> return (Uno Sin)),
-           Prefix (m_reserved "cos" >> return (Uno Cos)),
-           Prefix (m_reserved "tan" >> return (Uno Tan)),
-           Prefix (m_reserved "int" >> return (Uno Int)),
-           Prefix (m_reserved "sqrt" >> return (Uno Sqrt))]
-        , [Infix (m_reservedOp "^" >> return (Duo Pow)) AssocLeft]
-        , [Infix (m_reservedOp "*" >> return (Duo Mult)) AssocLeft,
-           Infix (m_reservedOp "/" >> return (Duo Div)) AssocLeft,
-           Infix (m_reserved "mod" >> return (Duo Mod)) AssocLeft]
-        , [Infix (m_reservedOp "+" >> return (Duo Add)) AssocLeft,
-           Infix (m_reservedOp "-" >> return (Duo Sub)) AssocLeft]
+table = [ [Prefix (reserved "log" >> return (Uno Log)),
+           Prefix (reserved "exp" >> return (Uno Exp)),
+           Prefix (reserved "sin" >> return (Uno Sin)),
+           Prefix (reserved "cos" >> return (Uno Cos)),
+           Prefix (reserved "tan" >> return (Uno Tan)),
+           Prefix (reserved "int" >> return (Uno Int)),
+           Prefix (reserved "sqrt" >> return (Uno Sqrt))]
+        , [Infix (reservedOp "^" >> return (Duo Pow)) AssocLeft]
+        , [Infix (reservedOp "*" >> return (Duo Mult)) AssocLeft,
+           Infix (reservedOp "/" >> return (Duo Div)) AssocLeft,
+           Infix (reserved "mod" >> return (Duo Mod)) AssocLeft]
+        , [Infix (reservedOp "+" >> return (Duo Add)) AssocLeft,
+           Infix (reservedOp "-" >> return (Duo Sub)) AssocLeft]
         ]
 
 numParser :: Parser (Either Int Double)
 numParser = do s <- char '+' <|> char '-' <|> return '+'
-               n <- m_naturalOrFloat
+               n <- naturalOrFloat
                return $ toInt (s == '+') n
   where toInt isPositive (Left x)  = Left . fromInteger $ neg isPositive x
         toInt isPositive (Right x) = Right $ neg isPositive x
         neg isPositive x | isPositive = x
                          | otherwise  = negate x
 
-term = m_parens aexpr <|> (m_reservedOp "inf" >> return Infinity) <|> fmap Var m_identifier <|>
+term = parens aexpr <|> (reservedOp "inf" >> return Infinity) <|> fmap Var identifier <|>
        do n <- numParser
           return $ case n of
                      Left n -> Integer n
@@ -289,26 +290,26 @@ emptyModule = Module{ contactMap = []
                     }
 
 initP :: Parser Init
-initP = do m_reserved "init:"
-           n <- m_decimal
-           m_whiteSpace
+initP = do reserved "init:"
+           n <- decimal
+           whiteSpace
            e <- kexpr
            return (fromIntegral n, e)
 
 obsP :: Parser Obs
-obsP = do m_reserved "obs:"
+obsP = do reserved "obs:"
           getKExprWithName <|> getId
-  where getId = m_identifier >>= return . Plot
+  where getId = identifier >>= return . Plot
         getKExprWithName = do char '\''
                               name <- many $ noneOf "'"
                               char '\''
-                              m_whiteSpace
+                              whiteSpace
                               ke <- kexpr
                               return $ KExprWithName name ke
 
 varP :: Parser Var
-varP = do name <- m_identifier
-          m_reservedOp "="
+varP = do name <- identifier
+          reservedOp "="
           ke <- kexpr
           if null ke
             then do ae <- aexpr
@@ -317,31 +318,31 @@ varP = do name <- m_identifier
 
 energyShape :: Parser Shape
 energyShape = do expr <- kexpr
-                 m_reservedOp "@"
+                 reservedOp "@"
                  energy <- aexpr
                  return (expr, energy)
 
 
 shapeP :: Parser Shape
-shapeP = m_reserved "shape:" >> energyShape
+shapeP = reserved "shape:" >> energyShape
 
 shapesP :: Parser [Shape]
-shapesP = m_reserved "shapes:" >> block energyShape
+shapesP = reserved "shapes:" >> block energyShape
 
 ruleWithName :: Parser RuleWithName
-ruleWithName = do name <- try (m_identifier <* m_reservedOp "=") <|> return ""
+ruleWithName = do name <- try (identifier <* reservedOp "=") <|> return ""
                   r <- rule
                   return (name, r)
 
 ruleP :: Parser RuleWithName
-ruleP = m_reserved "rule:" >> ruleWithName
+ruleP = reserved "rule:" >> ruleWithName
 
 rulesP :: Parser [RuleWithName]
-rulesP = m_reserved "rules:" >> block ruleWithName
+rulesP = reserved "rules:" >> block ruleWithName
 
 -- FIXME cmP should be indentation-aware
 cmP :: Parser CM
-cmP = m_reserved "contact-map:" >> m_commaSep1 cmAgent
+cmP = reserved "contact-map:" >> commaSep1 cmAgent
 
 data Decl = CMDecl CM
           | ShapeDecl Shape
@@ -364,7 +365,7 @@ createModule decls = foldr (flip addDecl) emptyModule decls
         addDecl m (VarDecl v)     = m{ vars = v : vars m }
 
 moduleParser :: Parser Module
-moduleParser = m_whiteSpace >> kfParser <* eof
+moduleParser = whiteSpace >> kfParser <* eof
   where kfParser :: Parser Module
         kfParser = do decls <- many declParser
                       return $ createModule decls
@@ -381,10 +382,13 @@ moduleParser = m_whiteSpace >> kfParser <* eof
 
 
 -- Helper functions
+fileParse :: String -> Parser a -> String -> a
+fileParse filename p s = case runIndent filename $ runParserT p () filename s of
+                           Left e -> error $ show e -- ParseError
+                           Right result -> result
+
 simpleParse :: Parser a -> String -> a
-simpleParse p s = case runIndent "" $ runParserT p () "" s of
-                    Left e -> error $ show e -- ParseError
-                    Right result -> result
+simpleParse = fileParse ""
 
 parseAgent :: String -> Agent
 parseAgent = simpleParse agent
@@ -398,17 +402,6 @@ parseRule = simpleParse rule
 parseModule :: String -> Module
 parseModule = simpleParse moduleParser
 
-
 parseFromFile :: String -> IO Module
-parseFromFile filename = do s <- readFile filename
-                            case runIndent filename $ runParserT moduleParser () filename s of
-                              Left e -> error $ show e
-                              Right kappaModule -> return kappaModule
-
--- This function is only useful for MinimalGlueings.hs
-parseKExprsFromFile :: String -> IO [KExpr]
-parseKExprsFromFile filename = do s <- readFile filename
-                                  case runIndent filename $ runParserT (m_semiSep1 kexpr) () filename s of
-                                    Left e -> error $ show e
-                                    Right kexprs -> return kexprs
+parseFromFile filename = readFile filename >>= return . fileParse filename moduleParser
 

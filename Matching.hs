@@ -7,6 +7,7 @@ import Data.List (nub, partition, (\\))
 
 import qualified Mixture as M
 import qualified Env as E
+import qualified Types as T -- debug
 import Utils
 
 -- The idea here is to find all possible non-isomorphic superpositions of two or more kappa terms
@@ -144,12 +145,12 @@ type TodoMap = Map.Map (M.AgentId, M.AgentId) PendingLinks
 -- Returns all possible pull-backs for the two mixtures
 -- TODO how could I avoid using nub? why are there so many replicates? (ie, why are there so many ways to create the same intersection?)
 --      is it because isomorphisms? if so, why are them all created in a syntacticly equivalent manner?
-intersections :: M.Mixture -> M.Mixture -> [(M.Mixture, (Matching, Matching))]
+intersections :: M.Mixture -> M.Mixture -> [(M.Mixture, Matching, Matching)]
 intersections m1 m2 = nub $ do (agents, graph, m1Matching, m2Matching, _, _, _) <- pullbacks [([], Map.empty, [], [], 0, ids1, ids2)]
                                let m3 = M.Mixture { M.agents = Vec.fromList $ reverse agents
                                                   , M.graph  = graph
                                                   }
-                               return (m3, (m1Matching, m2Matching))
+                               return (m3, m1Matching, m2Matching)
   where
     ids1 = Set.fromList $ M.agentIds m1
     ids2 = Set.fromList $ M.agentIds m2
@@ -223,41 +224,39 @@ type AgentMap = Map.Map M.AgentId M.AgentId
 --data LinkInfo = T1 | T2 | T12 | None
 data LinkInfo = T1 | T2 | None
 
--- TODO this should be :: [M.Mixture] -> [(M.Mixture, [AgentMap])]
-minimalGlueings :: M.Mixture -> M.Mixture -> [(M.Mixture, (AgentMap, AgentMap))]
+-- TODO this should be :: [M.Mixture] -> [(M.Mixture, [AgentMap], M.Mixture)]
+minimalGlueings :: M.Mixture -> M.Mixture -> [(M.Mixture, AgentMap, AgentMap, M.Mixture)]
 minimalGlueings m1 m2 =
-  do (m3 , (m1Matchings, m2Matchings)) <- intersections m1 m2
-     (m3', (m1AgentMap , m2AgentMap )) <- refine m3 m1Matchings m2Matchings
-     let (m3'' , m1AgentMap') = addAndExtend m1 (m3' , m1AgentMap)
-         (m3''', m2AgentMap') = addAndExtend m2 (m3'', m2AgentMap)
-     return (m3''', (m1AgentMap', m2AgentMap'))
+  do (m0, m1Matchings, m2Matchings) <- intersections m1 m2
+     (m3, m1AgentMap , m2AgentMap ) <- refine m0 m1Matchings m2Matchings
+     let (m3' , m1AgentMap') = addAndExtend m1 (m3 , m1AgentMap)
+         (m3'', m2AgentMap') = addAndExtend m2 (m3', m2AgentMap)
+     return (m0, m1AgentMap', m2AgentMap', m3'')
   where
-    refine :: M.Mixture -> Matching -> Matching -> [(M.Mixture, (AgentMap, AgentMap))]
-    refine m3 m1Matchings m2Matchings = foldM refineAgent (m3, (m1AgentMap, m2AgentMap)) (M.agentIds m3)
+    refine :: M.Mixture -> Matching -> Matching -> [(M.Mixture, AgentMap, AgentMap)]
+    refine m0 m1Matchings m2Matchings = foldM refineAgent (m0, m1AgentMap, m2AgentMap) (M.agentIds m0)
       where
         m1AgentMap = Map.fromList m1Matchings
         m2AgentMap = Map.fromList m2Matchings
         bwdMap = Map.fromList [ (id3, (id1, id2)) | [(id1, id3), (id2, _)] <- groupWith snd (m1Matchings ++ m2Matchings) ]
 
-        refineAgent :: (M.Mixture, (AgentMap, AgentMap)) -> M.AgentId -> [(M.Mixture, (AgentMap, AgentMap))]
+        refineAgent :: (M.Mixture, AgentMap, AgentMap) -> M.AgentId -> [(M.Mixture, AgentMap, AgentMap)]
         refineAgent mg id3 = foldM refineSite' mg (M.siteIds a1) -- note that M.siteIds a1 == M.siteIds a2 == M.siteIds a3
           where
             (id1, id2) = bwdMap Map.! id3
             a1 = M.agents m1 Vec.! id1
             a2 = M.agents m2 Vec.! id2
 
-            refineSite' :: (M.Mixture, (AgentMap, AgentMap)) -> M.SiteId -> [(M.Mixture, (AgentMap, AgentMap))]
-            refineSite' (m3, (m1AgentMap, m2AgentMap)) sId =
+            refineSite' :: (M.Mixture, AgentMap, AgentMap) -> M.SiteId -> [(M.Mixture, AgentMap, AgentMap)]
+            refineSite' (m3, m1AgentMap, m2AgentMap) sId =
               do s3' <- toList $ siteUnify s1 s2
                  let a3' = a3{ M.interface = M.interface a3 Vec.// [(sId, s3')] }
                      m3' = m3{ M.agents    = M.agents    m3 Vec.// [(id3, a3')] }
                  case linkInfo s1 s2 s3 of
-                   T1   -> let (m3'', m1AgentMap') = extend m1 [(id1, id3, sId)] (m3', m1AgentMap)
-                           in return (m3'', (m1AgentMap', m2AgentMap))
-                   T2   -> let (m3'', m2AgentMap') = extend m2 [(id2, id3, sId)] (m3', m2AgentMap)
-                           in return (m3'', (m1AgentMap, m2AgentMap'))
+                   T1   -> let (m3'', m1AgentMap') = extend m1 [(id1, id3, sId)] (m3', m1AgentMap) in return (m3'', m1AgentMap', m2AgentMap)
+                   T2   -> let (m3'', m2AgentMap') = extend m2 [(id2, id3, sId)] (m3', m2AgentMap) in return (m3'', m1AgentMap, m2AgentMap')
                    --T12  -> [] -- TODO is this the best way to handle the semilink creation when two sites are bound to different ends? probably I should not create the semilink in the first place
-                   None -> return (m3', (m1AgentMap, m2AgentMap))
+                   None -> return (m3', m1AgentMap, m2AgentMap)
               where
                 a3 = M.agents m3 Vec.! id3
                 s1 = M.interface a1 Vec.! sId
