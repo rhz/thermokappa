@@ -1,9 +1,9 @@
 module Utils( fromMaybe
             , foldl', sortWith, groupWith
-            , (?), updateVec
+            , (?), (!?), updateVec
             , foldM, liftM, join, guard, joinMaybes, select, (<$>)
             , zipmap, mapKeys, reverseMap
-            , (|.|)
+            , (|.|), on
             , frequencies, repeatedElems
             , infinity, cartesianProduct, combinationsOf, combinations
             , indexedList
@@ -15,6 +15,7 @@ import Data.Maybe (fromMaybe, fromJust)
 import Control.Monad
 import Data.List (foldl', group, sort, find)
 import Data.Tuple (swap)
+import Data.Function (on)
 import Data.Functor ((<$>))
 import GHC.Exts (sortWith, groupWith)
 
@@ -22,6 +23,11 @@ import GHC.Exts (sortWith, groupWith)
 infixr 1 ?
 (?) :: Maybe a -> String -> a
 x ? s = fromMaybe (error s) x
+
+-- maybe I should generalise this into a Lookupable class
+infixr 9 !?
+(!?) :: Ord k => Map.Map k v -> k -> Maybe v
+m !? k = Map.lookup k m
 
 updateVec :: Vec.Vector a -> [(Int, a)] -> String -> Vec.Vector a
 updateVec vec vals fnName = if all (< len) indices

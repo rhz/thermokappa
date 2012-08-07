@@ -15,11 +15,11 @@ import Utils
 -- Sites
 type InternalStateId = Int
 data BindingState = Free | SemiLink | Bound | Unspecified -- WLD = Unspecified
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 data Site = Site { internalState :: Maybe InternalStateId
                  , bindingState  :: BindingState
                  }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 type SiteId = Int
 type Interface = Vec.Vector Site -- indexed by SiteId
@@ -28,7 +28,7 @@ type Interface = Vec.Vector Site -- indexed by SiteId
 data Agent = Agent { agentName :: E.AgentNameId
                    , interface :: Interface
                    }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 foldInterface :: (SiteId -> Site -> a -> a) -> a -> Agent -> a
 foldInterface f acc = Vec.ifoldr f acc . interface
@@ -85,7 +85,7 @@ type Graph = Map.Map Endpoint Endpoint
 data Mixture = Mixture { agents :: Agents
                        , graph :: Graph
                        }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 empty :: Mixture
 empty = Mixture{ agents = Vec.empty
@@ -101,36 +101,40 @@ agentsWithId = indexedList . agents
 data Link = Link AgentId SiteId
           | Closed
 type LinkMap = Map.Map KP.BondLabel Link
+data Context = Ctxt { freshId :: !AgentId
+                    , linkMap :: !LinkMap
+                    }
 
-addAgent :: E.Env -> Bool -> ([Agent], Graph, LinkMap, AgentId) -> KP.Agent -> ([Agent], Graph, LinkMap, AgentId)
-addAgent env isPattern (!mix, !graph, !linkMap, !agentId) (KP.Agent agentName intf) = (agent:mix, graph', linkMap', agentId+1)
+evalAgent :: E.Env -> Bool -> ([Agent], Graph, LinkMap, AgentId) -> KP.Agent -> ([Agent], Graph, LinkMap, AgentId)
+evalAgent env isPattern (!mix, !graph, !linkMap, !agentId) (KP.Agent agentName intf) = (agent:mix, graph', linkMap', agentId+1)
   where
     agent = Agent{ agentName = agentNameId
                  , interface = interface
                  }
-    agentNameId = E.idOfAgent env agentName ? "Mixture.addAgent: " ++ missingAgent agentName
+    agentNameId = E.idOfAgent env agentName ? "Mixture.evalAgent: agent '" ++ agentName ++ "' is not mentioned in contact map"
+    missingSite siteName = "site '" ++ siteName ++ "' in agent '" ++ agentName ++ "' is not mentioned in contact map"
 
     interface = emptyInterface env agentNameId Vec.// sites
     sites = map getSite intf
     getSite (KP.Site siteName int lnk) = (siteId, Site { internalState = internalStateId int
                                                        , bindingState = bindingState lnk
                                                        })
-      where siteId = E.idOfSite env (agentNameId, siteName) ? "Mixture.addAgent: " ++ missingSite agentName siteName
+      where siteId = E.idOfSite env (agentNameId, siteName) ? "Mixture.evalAgent: " ++ missingSite siteName
 
             internalStateId "" | isPattern = Nothing
                                | otherwise = Just (E.defaultInternalState env (agentNameId, siteId))
             internalStateId intState = Just int
-              where int = E.idOfIntState env (agentNameId, siteId, intState) ? "Mixture.addAgent: " ++ missingIntState agentName siteName intState
+              where int = E.idOfIntState env (agentNameId, siteId, intState) ? "Mixture.evalAgent: internal state '" ++ intState ++ "' in agent '" ++ agentName ++ "' and site '" ++ siteName ++ "' is not mentioned in contact map"
 
             bindingState KP.Free = Free
             bindingState (KP.Bound _) = Bound
             bindingState KP.SemiLink | isPattern = SemiLink
-                                     | otherwise = error "Mixture.addAgent: only patterns are allowed to have semi links"
+                                     | otherwise = error "Mixture.evalAgent: only patterns are allowed to have semi links"
             bindingState KP.Unspecified | isPattern = Unspecified
-                                        | otherwise = error "Mixture.addAgent: only patterns are allowed to have unspecified binding states"
+                                        | otherwise = error "Mixture.evalAgent: only patterns are allowed to have unspecified binding states"
 
     links = do (KP.Site siteName _ (KP.Bound bondLabel)) <- intf
-               let siteId = E.idOfSite env (agentNameId, siteName) ? "Mixture.addAgent: " ++ missingSite agentName siteName
+               let siteId = E.idOfSite env (agentNameId, siteName) ? "Mixture.evalAgent: " ++ missingSite siteName
                return (siteId, bondLabel)
 
     (graph', linkMap') = foldl' updateGraph (graph, linkMap) links
@@ -139,16 +143,16 @@ addAgent env isPattern (!mix, !graph, !linkMap, !agentId) (KP.Agent agentName in
       case Map.lookup bondLabel linkMap of
         Nothing          ->  (                                 graph, Map.insert bondLabel (Link agentId siteId) linkMap)
         Just (Link b j)  ->  (addLink (agentId, siteId) (b, j) graph, Map.insert bondLabel Closed                linkMap)
-        Just Closed      ->  error $ "Mixture.addAgent: bond label " ++ show bondLabel ++ " is binding more than two sites"
+        Just Closed      ->  error $ "Mixture.evalAgent: bond label " ++ show bondLabel ++ " is binding more than two sites"
 
 
 evalKExpr :: E.Env -> Bool -> KP.KExpr -> Mixture
 evalKExpr env isPattern kexpr
   | not $ null incompleteBonds = error $ "Mixture.evalKExpr: incomplete bond(s) " ++ show incompleteBonds
-  | otherwise = Mixture { agents = Vec.fromList $ reverse agents
+  | otherwise = Mixture { agents = Vec.fromList $ reverse agents -- TODO I can probably save this reverse if I leave out the reverse in KP.unpackChains
                         , graph = graph
                         }
-  where (agents, graph, linkMap, _) = foldl' (addAgent env isPattern) ([], Map.empty, Map.empty, 0) kexpr
+  where (agents, graph, linkMap, _) = foldl' (evalAgent env isPattern) ([], Map.empty, Map.empty, 0) kexpr
         incompleteBonds = map fst $ filter (not . isClosed . snd) (Map.toList linkMap)
         isClosed Closed = True
         isClosed _ = False
@@ -165,12 +169,12 @@ removeLink ep1 ep2 = Map.delete ep1 . Map.delete ep2
 
 setLnkInMix :: BindingState -> Endpoint -> Mixture -> Mixture
 setLnkInMix lnk (aId, sId) mix = mix{ agents = agents mix Vec.// [(aId, a')] }
-  where a = agents mix Vec.!? aId ? "Mixture.setLnk: agent id not found"
+  where a  = agents mix Vec.!? aId ? "Mixture.setLnk: agent id not found"
         a' = setLnk lnk a sId
 
 setIntInMix :: Maybe InternalStateId -> Endpoint -> Mixture -> Mixture
 setIntInMix int (aId, sId) mix = mix{ agents = agents mix Vec.// [(aId, a')] }
-  where a = agents mix Vec.!? aId ? "Mixture.setLnk: agent id not found"
+  where a  = agents mix Vec.!? aId ? "Mixture.setLnk: agent id not found"
         a' = setInt int a sId
 
 bind :: Endpoint -> Endpoint -> Mixture -> Mixture
@@ -226,18 +230,45 @@ valid mix@(Mixture{ graph = graph }) = all isInMix (Map.toList graph) && Vec.all
         isInGraph ep1 = (Map.lookup ep1 graph >>= flip Map.lookup graph) == Just ep1
 
 
--- Error reporting
-missingAgent :: KP.AgentName -> String
-missingAgent agentName =
-  "agent '" ++ agentName ++ "' is not mentioned in contact map"
+-- Connected components
+type AgentIdSet = Set.Set AgentId
 
-missingSite :: KP.AgentName -> KP.SiteName -> String
-missingSite agentName siteName =
-  "site '" ++ siteName ++ "' in agent '" ++ agentName ++ "' is not mentioned in contact map"
+-- Returns the list with all the agents that are in the same component as agentId
+component :: Mixture -> AgentId -> AgentIdSet
+component Mixture{ agents = agents, graph = graph } agentId = explore [agentId] Set.empty
+  where explore :: [AgentId] -> AgentIdSet -> AgentIdSet
+        explore [] visited = visited
+        explore (aId:todo) visited
+          | Set.member aId visited  =  explore todo visited -- skip this agent
+          | otherwise               =  explore (todo ++ nbs) (Set.insert aId visited)
+          where
+            nbs = do (sId, Site{ bindingState = Bound }) <- sitesWithId (agents Vec.!? aId ? "Mixture.component: agent id '" ++ show aId ++ "' not found")
+                     return . fst $ graph Map.! (aId, sId)
 
-missingIntState :: KP.AgentName -> KP.SiteName -> KP.InternalState -> String
-missingIntState agentName siteName intState =
-  "internal state '" ++ intState ++ "' in agent '" ++ agentName ++ "' and site '" ++ siteName ++ "' is not mentioned in contact map"
+components :: Mixture -> [AgentIdSet]
+components mix = components' [] (Set.fromList $ agentIds mix)
+  where components' acc ids
+          | Set.null ids = acc
+          | otherwise    = components' (cc:acc) (ids Set.\\ cc)
+          where cc = component mix (Set.findMin ids)
+
+split :: Mixture -> [Mixture]
+split mix = map (inducedSSG mix . Set.elems) (components mix)
+
+-- SSG = site-subgraph
+inducedSSG :: Mixture -> [AgentId] -> Mixture
+inducedSSG mix ids = foldr (setLnkInMix SemiLink) mix' semilinks
+  where mix' = Mixture{ agents = agents', graph = graph' }
+        agents' = Vec.backpermute (agents mix) (Vec.fromList ids)
+
+        amap = zipmap ids [0..] -- map the original agent ids onto their new ids
+        (graph', semilinks) = Map.foldrWithKey updateId (Map.empty, []) (graph mix)
+        updateId (a, i) (b, j) (graph, semilinks)
+          | Map.member a amap && Map.member b amap  =  (Map.insert (amap Map.! a, i) (amap Map.! b, j) graph, semilinks)
+          | Map.member a amap                       =  (graph, (amap Map.! a, i) : semilinks)
+          | Map.member b amap                       =  (graph, (amap Map.! b, j) : semilinks)
+          | otherwise                               =  (graph, semilinks)
+
 
 
 {- Old code

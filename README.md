@@ -16,3 +16,10 @@ Usage: `./MinimalGlueings inputfile.ka`
 The input file must contain two Kappa expressions separated by a semicolon.
 
 The program will generate one DOT file with all minimal glueings in textual representation plus one DOT file for each minimal glueing detailing agent mappings in a graphical way.
+
+## Additional Tools
+### Frag
+
+Compile: `ghc --make -O Frag`
+
+Usage: `./MinimalGlueings inputfile.ka n` where `n` is the maximum number of differential equations to print (there can be a infinite number of them, that's why).

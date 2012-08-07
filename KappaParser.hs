@@ -108,7 +108,8 @@ createChain first@(Agent fname fintf) second@(Agent sname sintf) last@(Agent lna
       error $ "KappaParser.createChain: all agents in a chain must have the same sites in their interface"
   | firstLink /= firstLink' =
       error $ "KappaParser.createChain: first and second agents in chain must be bound by sites '" ++ rightSite ++ "' and '" ++ leftSite ++ "', respectively"
-  | otherwise = first : take n agentsInChain ++ [last]
+  | otherwise =
+      first : take n agentsInChain ++ [last]
   where
     agentsInChain = iterate nextAgentInChain second
     n = (lastLink - firstLink) `quot` step
@@ -135,17 +136,15 @@ createChain first@(Agent fname fintf) second@(Agent sname sintf) last@(Agent lna
     hasSameSites :: Interface -> Interface -> Bool
     hasSameSites i1 i2 = map siteName i1 == map siteName i2
 
-kexpr :: Parser KExpr
-kexpr = reverse . unpackChains [] [] <$> commaSep1 (liftM Right agent <|> liftM Left ellipsis) <?> "kappa expression"
-  where
-    ellipsis = reserved "..."
+unpackChains :: KExpr -> [Either () Agent] -> KExpr
+unpackChains acc [] = reverse acc
+unpackChains acc ((Right a1):(Right a2):(Left ()):(Right a3):xs) = unpackChains (reverse (createChain a1 a2 a3) ++ acc) xs
+unpackChains acc ((Right a):xs) = unpackChains (a:acc) xs
+unpackChains acc xs = error $ "malformed chain expression"
 
-    unpackChains :: KExpr -> KExpr -> [Either () Agent] -> KExpr
-    unpackChains acc [b2,b1] [] = b1:b2:acc
-    unpackChains acc [b2,b1] ((Right a):xs) = unpackChains (b1:acc) [a,b2]  xs
-    unpackChains acc buf     ((Right a):xs) = unpackChains     acc  (a:buf) xs
-    unpackChains acc [b2,b1] ((Left _):(Right a):xs) = unpackChains (reverse (createChain b1 b2 a) ++ acc) [] xs
-    unpackChains _ _ _ = error "malformed chain expression"
+kexpr :: Parser KExpr
+kexpr = unpackChains [] <$> commaSep1 (liftM Right agent <|> liftM Left ellipsis) <?> "kappa expression"
+  where ellipsis = reserved "..."
 
 rule :: Parser Rule
 rule = do lhs <- kexpr
@@ -310,11 +309,8 @@ obsP = do reserved "obs:"
 varP :: Parser Var
 varP = do name <- identifier
           reservedOp "="
-          ke <- kexpr
-          if null ke
-            then do ae <- aexpr
-                    return (name, Right ae)
-            else return (name, Left ke)
+          expr <- liftM Left kexpr <|> liftM Right aexpr
+          return (name, expr)
 
 energyShape :: Parser Shape
 energyShape = do expr <- kexpr
