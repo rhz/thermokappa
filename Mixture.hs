@@ -270,6 +270,14 @@ inducedSSG mix ids = foldr (setLnkInMix SemiLink) mix' semilinks
           | otherwise                               =  (graph, semilinks)
 
 
+disjointUnion :: Mixture -> Mixture -> Mixture
+disjointUnion m1 m2 = Mixture{ agents = agents m1 Vec.++ agents m2
+                             , graph  = graph m1 `Map.union` Map.fromList (replaceIds <$> Map.toList (graph m2))
+                             }
+  where size1 = Vec.length (agents m1)
+        replaceIds ((a, i), (b, j)) = ((a + size1, i), (b + size1, j))
+
+
 
 {- Old code
 -- Returns the list with all the agents that are in the same component as agentId

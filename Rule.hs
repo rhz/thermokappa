@@ -4,22 +4,24 @@ module Rule where
 
 import qualified Data.Vector as Vec
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.Maybe (catMaybes)
+import Data.List (sort)
 
 import qualified KappaParser as KP
 import qualified Mixture as M
 import qualified Env as E
-import Utils
 import PlainKappa (showAExpr)
+import Utils
 
 type Injection = Map.Map M.AgentId M.AgentId -- TODO should this be here or in Matching or elsewhere?
 
-data Action = Mod M.Endpoint M.InternalStateId
-            | Bnd M.Endpoint M.Endpoint
+data Action = Add M.Mixture [M.AgentId]
+            | Mod M.Endpoint M.InternalStateId
             | Brk M.Endpoint
-            | Add M.Agent
-            | Del M.AgentId
-  deriving (Show, Eq)
+            | Bnd M.Endpoint M.Endpoint
+            | Del [M.AgentId]
+  deriving (Show, Eq, Ord)
 
 type Rate = KP.Rate
 data Rule = Rule { lhs :: M.Mixture
@@ -72,14 +74,18 @@ modifiedSites rule = (concatMap diff common ++ concatMap add deleted, concatMap 
 
 
 actionScript :: M.Mixture -> M.Mixture -> [Action]
-actionScript lhs rhs = map Add added ++ removeDups [] (concatMap diff common) ++ map Del deletedIds
+actionScript lhs rhs = added ++ common ++ deleted
   where
     prefixId = largestPrefix' lhs rhs
-    l = M.agents lhs
-    r = M.agents rhs
-    common = Vec.toList . Vec.take prefixId . Vec.indexed $ Vec.zip l r
-    added  = Vec.toList $ Vec.drop prefixId r
+    [l, r] = M.agents <$> [lhs, rhs]
+    addedIds   = [prefixId..Vec.length r - 1]
     deletedIds = [prefixId..Vec.length l - 1]
+    added | null addedIds = []
+          | otherwise     = [Add (M.inducedSSG rhs addedIds) addedIds]
+    deleted | null deletedIds = []
+            | otherwise       = [Del deletedIds]
+
+    common = sort . removeDups . concatMap diff . Vec.toList . Vec.take prefixId . Vec.indexed $ Vec.zip l r
 
     diff :: (M.AgentId, (M.Agent, M.Agent)) -> [Action]
     diff (aId, (al, ar)) = intActions ++ lnkActions
@@ -113,28 +119,39 @@ actionScript lhs rhs = map Add added ++ removeDups [] (concatMap diff common) ++
         bind  sId = Bnd (aId, sId) nb
           where nb = M.follow rhs (aId, sId) ? "Rule.actionScript: no link for " ++ show (aId, sId)
 
-    removeDups acc [] = acc
-    removeDups acc (x@(Bnd (a, i) (b, j)) : xs) = removeDups (x:acc) (filter (/= Bnd (b, j) (a, i)) xs)
-    removeDups acc (x@(Brk (a, i)) : xs) = removeDups (x:acc) xs'
-      where xs' | Just (b, j) <- M.follow lhs (a, i) = filter (/= Brk (b, j)) xs
-                | otherwise                          = xs
-    removeDups acc (x:xs) = removeDups (x:acc) xs
+    removeDups [] = []
+    removeDups (x@(Bnd (a, i) (b, j)) : xs) = x : removeDups (filter (/= Bnd (b, j) (a, i)) xs)
+    removeDups (x@(Brk (a, i)) : xs) = x : removeDups xs'
+      where xs' | Just (b, j) <- M.follow lhs (a, i)  =  filter (/= Brk (b, j)) xs
+                | otherwise                           =  xs
+
 
 -- TODO How should I handle binding to new agents?
-apply :: [Action] -> Injection -> M.Mixture -> M.Mixture
-apply [] _ mix = mix
-apply (Mod (aId, sId) x  : actions) inj mix = apply actions inj $ M.setIntInMix (Just x) (inj !? aId ? "error 1", sId) mix
-apply (Bnd (a, i) (b, j) : actions) inj mix = apply actions inj $ M.bind (inj !? a ? "error 2", i) (inj !? b ? "error 3: " ++ show (a, i) ++ " binds " ++ show (b, j) ++ " in " ++ show mix ++ " (emb: " ++ show inj ++ ")", j) mix
-apply (Brk (a, i)        : actions) inj mix = apply actions inj $ M.unbind (inj !? a ? "error 4", i) mix
-apply (Add agent         : actions) inj mix = apply actions inj mix{  M.agents = M.agents mix `Vec.snoc` agent } -- Beware! Vec.snoc = memory leak!!
-apply (Del aId           : actions) inj mix = apply actions inj mix'{ M.agents = prefix Vec.++ Vec.tail suffix }
-  where
-    sites = map fst $ filter (M.isBound . snd) (indexedList . M.interface $ M.agents mix Vec.! aId')
-    aId' = inj !? aId ? "error 5"
-    mix' = foldr unbind mix sites
-    unbind sId mix = M.unbind (aId', sId) mix
-    (prefix, suffix) = Vec.splitAt aId' (M.agents mix')
+--      One possible solution: update not only mix but also inj with the application of each action
+--      In this way, after adding a mixture you can add the corresponding rhs ids of the new agents
+--      to the injection map and then bind to them in the usual way
+apply :: [Action] -> (Injection, M.Mixture) -> (Injection, M.Mixture)
+apply [] (inj, mix) = (inj, mix)
+apply (Mod (aId, sId) x  : actions) (inj, mix) = apply actions (inj, M.setIntInMix (Just x) (inj Map.! aId, sId) mix)
+apply (Bnd (a, i) (b, j) : actions) (inj, mix) = apply actions (inj, M.bind (inj Map.! a, i) (inj Map.! b, j) mix)
+apply (Brk (a, i)        : actions) (inj, mix) = apply actions (inj, M.unbind (inj Map.! a, i) mix)
 
+apply (Add mix' ids      : actions) (inj, mix) = apply actions (inj', M.disjointUnion mix mix')
+  where inj' = inj `Map.union` zipmap ids [Vec.length (M.agents mix)..]
+
+apply (Del aIds          : actions) (inj, mix) = apply actions (inj, mix''{ M.graph = replaceIds $ M.graph mix'' })
+  where mix'' = mix'{ M.agents = Vec.ifilter (const . (`Set.member` idSet)) (M.agents mix') }
+        idMap = fst . foldr newId (Map.empty, 0) $ M.agentIds mix'
+        idSet = Set.fromList aIds
+        mix'  = foldr unbind mix $ map (inj Map.!) aIds
+        unbind aId mix = foldr (M.unbind . (aId, )) mix sites
+          where sites = fst <$> filter (M.isBound . snd) (M.sitesWithId $ M.agents mix Vec.! aId)
+
+        newId id (idMap, n) | id `Set.member` idSet = (idMap, n)
+                            | otherwise = (Map.insert id n idMap, n+1)
+
+        replaceIds graph = Map.fromList (replaceIds' <$> Map.toList graph)
+          where replaceIds' ((a, i), (b, j)) = ((idMap Map.! a, i), (idMap Map.! b, j))
 
 toKappa :: E.Env -> Rule -> String
 toKappa env rule = M.toKappa env (lhs rule) ++ " -> " ++ M.toKappa env (rhs rule) ++ " @ " ++ showAExpr (rate rule)

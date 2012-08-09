@@ -7,7 +7,7 @@ module KappaParser( SiteName, InternalState, BondLabel, BindingState(..), Site(.
                   , AExpr(..), Unop(..), Duop(..)
                   , Obs(..), Shape, ShapeName, Init, Expr, Var, VarName, Module(..), emptyModule
                   , agent, kexpr, rule, aexpr, moduleParser
-                  , fileParse, simpleParse, parseAgent, parseKExpr, parseRule, parseModule, parseFromFile
+                  , fileParse, simpleParse, parseAgent, parseKExpr, parseRule, parseCM, parseModule, parseFromFile
                   , kappaDef, parens, decimal, naturalOrFloat, comma, commaSep, commaSep1, semiSep1, symbol, reservedOp, reserved, identifier, whiteSpace
                   ) where
 
@@ -136,6 +136,7 @@ createChain first@(Agent fname fintf) second@(Agent sname sintf) last@(Agent lna
     hasSameSites :: Interface -> Interface -> Bool
     hasSameSites i1 i2 = map siteName i1 == map siteName i2
 
+-- TODO I should get rid of all these reverses
 unpackChains :: KExpr -> [Either () Agent] -> KExpr
 unpackChains acc [] = reverse acc
 unpackChains acc ((Right a1):(Right a2):(Left ()):(Right a3):xs) = unpackChains (reverse (createChain a1 a2 a3) ++ acc) xs
@@ -143,7 +144,7 @@ unpackChains acc ((Right a):xs) = unpackChains (a:acc) xs
 unpackChains acc xs = error $ "malformed chain expression"
 
 kexpr :: Parser KExpr
-kexpr = unpackChains [] <$> commaSep1 (liftM Right agent <|> liftM Left ellipsis) <?> "kappa expression"
+kexpr = unpackChains [] <$> commaSep (liftM Right agent <|> liftM Left ellipsis) <?> "kappa expression" -- commaSep or commaSep1?
   where ellipsis = reserved "..."
 
 rule :: Parser Rule
@@ -309,7 +310,7 @@ obsP = do reserved "obs:"
 varP :: Parser Var
 varP = do name <- identifier
           reservedOp "="
-          expr <- liftM Left kexpr <|> liftM Right aexpr
+          expr <- liftM Right aexpr <|> liftM Left kexpr
           return (name, expr)
 
 energyShape :: Parser Shape
@@ -394,6 +395,9 @@ parseKExpr = simpleParse kexpr
 
 parseRule :: String -> Rule
 parseRule = simpleParse rule
+
+parseCM :: String -> CM
+parseCM = simpleParse cmP
 
 parseModule :: String -> Module
 parseModule = simpleParse moduleParser

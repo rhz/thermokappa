@@ -81,11 +81,12 @@ fragment rules obss = fragment' obss []
         isRelevant :: [M.Endpoint] -> M.Mixture -> (M.Mixture, Injection, Injection, M.Mixture) -> Bool
         isRelevant msites m2 (m0, _, m2Inj, _) = any inPullback msites
           where
-            inPullback (aId, sId) = agentInPullback && s0 `siteMatch` s2 -- TODO why should I check if s2 matches s0?
+            inPullback (aId, sId) = agentInPullback && siteInPullback -- s0 `siteMatch` s2
               where id0 = m2Inj Map.! aId
-                    s0 = M.interface (M.agents m0 Vec.! id0) Vec.! sId
-                    s2 = M.interface (M.agents m2 Vec.! aId) Vec.! sId
                     agentInPullback = id0 < Vec.length (M.agents m0)
+
+                    s0 = M.interface (M.agents m0 Vec.! id0) Vec.! sId
+                    siteInPullback = not $ M.isUnspecified s0
 
         lhsTerms = (neg $ R.rate rule, ) <$> M.split <$> codomain    <$> lhsRelevantMG
         rhsTerms = (      R.rate rule, ) <$> M.split <$> invert rule <$> rhsRelevantMG
@@ -93,7 +94,7 @@ fragment rules obss = fragment' obss []
         codomain (_, _, _, m3) = m3
 
         invert :: R.Rule -> (M.Mixture, Injection, Injection, M.Mixture) -> M.Mixture
-        invert rule (_, _, rhsInj, m3) = R.apply invertedScript rhsInj m3
+        invert rule (_, _, rhsInj, m3) = snd $ R.apply invertedScript (rhsInj, m3)
           where invertedScript = R.actionScript (R.rhs rule) (R.lhs rule)
 
 
